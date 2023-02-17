@@ -14,7 +14,7 @@ static const char revid[] = "$Id: os_dir.c,v 11.15 2003/01/08 05:29:11 bostic Ex
 #ifndef NO_SYSTEM_INCLUDES
 #include <sys/types.h>
 
-#if HAVE_DIRENT_H
+#ifdef HAVE_DIRENT_H
 # include <dirent.h>
 # define NAMLEN(dirent) strlen((dirent)->d_name)
 #else
