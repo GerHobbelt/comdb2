@@ -1249,11 +1249,13 @@ elect_again:
        here.  */
     set_repinfo_master_host(bdb_state, db_eid_invalid, __func__, __LINE__);
 
+    int already_master = 0;
+
     /* Should be holding bdb readlock .. */
     BDB_READLOCK("rep_elect");
 
-    rc = bdb_state->dbenv->rep_elect(bdb_state->dbenv, elect_count, rep_pri,
-                                     elect_time, &newgen, &master_host);
+    rc = bdb_state->dbenv->rep_elect(bdb_state->dbenv, elect_count, rep_pri, elect_time, &newgen, &already_master,
+                                     &master_host);
     BDB_RELLOCK();
 
     if (rc != 0) {
@@ -1275,6 +1277,13 @@ elect_again:
     }
     /* replace now: if i was already master, rep-start wont be called */
     set_repinfo_master_host(bdb_state, master_host, __func__, __LINE__);
+
+    /* Berkley says we are already master.  We won't get a rep-message and
+     * shouldn't call the newmaster-callback here (which would normally set this
+     * Just set thedb->master. */
+    if (already_master) {
+        thedb_set_master(master_host);
+    }
 
     /* Check if it's us. */
     if (rc == 0) {
@@ -3953,7 +3962,8 @@ static int process_berkdb(bdb_state_type *bdb_state, char *host, DBT *control,
 
     if ((time2 - time1) > bdb_state->attr->rep_longreq) {
         const struct berkdb_thread_stats *t = bdb_get_thread_stats();
-        logmsg(LOGMSG_WARN, "LONG rep_process_message: %d seconds, type %d r %d\n", time2 - time1, rep_control->rectype, r);
+        logmsg(LOGMSG_WARN, "LONG rep_process_message: %d seconds, type:%d r:%d host:%s\n",
+                time2 - time1, rep_control->rectype, r, host);
         bdb_fprintf_stats(t, "  ", stderr);
     }
 
@@ -4747,8 +4757,8 @@ void berkdb_receive_msg(void *ack_handle, void *usr_ptr, char *from_host,
 
         bdb_state->dbenv->rep_flush(bdb_state->dbenv);
 
-        logmsg(LOGMSG_INFO, "USER_TYPE_LSNCMP %d %d    %d %d\n", lsn_cmp.lsn.file,
-                cur_lsn.file, lsn_cmp.lsn.offset, cur_lsn.offset);
+        logmsg(LOGMSG_INFO, "USER_TYPE_LSNCMP %d %d    %d %d host:%s\n", lsn_cmp.lsn.file,
+                cur_lsn.file, lsn_cmp.lsn.offset, cur_lsn.offset, from_host);
 
         /* if he's ahead he's good */
         if (log_compare(&lsn_cmp.lsn, &cur_lsn) >= 0) {
