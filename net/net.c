@@ -2427,8 +2427,7 @@ ssize_t net_udp_send(int udp_fd, netinfo_type *netinfo_ptr, const char *host,
     return nsent;
 }
 
-static host_node_type *add_to_netinfo_ll(netinfo_type *netinfo_ptr,
-                                         const char hostname[], int portnum)
+host_node_type *add_to_netinfo_ll(netinfo_type *netinfo_ptr, const char hostname[], int portnum)
 {
     host_node_type *ptr;
     /* check to see if the node already exists */
@@ -2565,6 +2564,9 @@ void netinfo_lock(netinfo_type *netinfo_ptr, int seconds)
 static void rem_from_netinfo_ll(netinfo_type *netinfo_ptr,
                                 host_node_type *host_node_ptr)
 {
+    if (host_node_ptr) {
+        logmsg(LOGMSG_USER, "%s svc:%s host:%s\n", __func__, netinfo_ptr->service, host_node_ptr->host);
+    }
     host_node_type *tmp = netinfo_ptr->head;
     if (host_node_ptr == tmp) {
         netinfo_ptr->head = host_node_ptr->next;
