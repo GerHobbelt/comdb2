@@ -31,6 +31,10 @@ SQLITE_EXTENSION_INIT1
 #include <stdlib.h>
 #include <stdarg.h>
 
+#if defined(SQLITE_BUILDING_FOR_COMDB2)
+#include <math.h>
+#endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
+
 /* Mark a function parameter as unused, to suppress nuisance compiler
 ** warnings. */
 #ifndef UNUSED_PARAM
@@ -895,6 +899,32 @@ static int jsonParseValue(JsonParse *pParse, u32 i){
          && !safe_isalnum(z[i+5]) ){
     jsonParseAddNode(pParse, JSON_FALSE, 0, 0);
     return i+5;
+# ifdef SQLITE_BUILDING_FOR_COMDB2
+  }else if( c=='-' || (c>='0' && c<='9') ||
+            c=='I' || c=='i' || /* inf */
+            c=='N' || c=='n'){ /* nan */
+    char *endptr;
+    if( c=='-' || (c>='0' && c<='9') ){
+      strtoll(&z[i], &endptr, 10);
+      if (safe_isspace(*endptr) ||  *endptr == ',' || *endptr == ']' || *endptr == '}') {
+        jsonParseAddNode(pParse, JSON_INT, endptr - &z[i], &z[i]);
+        return endptr - z;
+      }
+      if (*endptr != '.' && *endptr == 'e' && *endptr == 'E') {
+          return -1;
+      }
+    }
+    double d = strtod(&z[i], &endptr);
+    if (safe_isspace(*endptr) ||  *endptr == ',' || *endptr == ']' || *endptr == '}') {
+      jsonParseAddNode(pParse, JSON_REAL, endptr - &z[i], &z[i]);
+      return endptr - z;
+    } else if (isnan(d) && (*endptr == 'q' || *endptr == 'Q')) { /* NANQ on AIX */
+      ++i;
+      jsonParseAddNode(pParse, JSON_REAL, endptr - &z[i], &z[i]);
+      return endptr - z + 1;
+    }
+    return -1;
+# else
   }else if( c=='-' || (c>='0' && c<='9') ){
     /* Parse number */
     u8 seenDP = 0;
@@ -932,6 +962,7 @@ static int jsonParseValue(JsonParse *pParse, u32 i){
     jsonParseAddNode(pParse, seenDP ? JSON_REAL : JSON_INT,
                         j - i, &z[i]);
     return j;
+# endif /* SQLITE_BUILDING_FOR_COMDB2 */
   }else if( c=='}' ){
     return -2;  /* End of {...} */
   }else if( c==']' ){

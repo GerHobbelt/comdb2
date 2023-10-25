@@ -15,6 +15,7 @@
  */
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -29,6 +30,12 @@ enum {
     SQLITE_BLOB,
     SQLITE_NULL,
     SQLITE_TEXT,
+    SQLITE_DATETIME,
+    SQLITE_DATETIMEUS,
+    SQLITE_INTERVAL_YM,
+    SQLITE_INTERVAL_DS,
+    SQLITE_INTERVAL_DSUS,
+    SQLITE_DECIMAL,
 
     SQLITE_OK = 0,
     SQLITE_NOMEM = 7,
@@ -98,6 +105,7 @@ static void *cson__not_reached_void_ptr(intptr_t, ...);
 #define SQLITE3_H
 #define SQLITEINT_H
 #define SQLITE_API
+#define SQLITE_BUILDING_FOR_COMDB2
 #define SQLITE_CORE
 #define SQLITE_ENABLE_JSON1
 #define SQLITE_EXTENSION_INIT1
@@ -565,7 +573,14 @@ cson_value *cson_value_new_double(cson_double_t v)
     cson_value *val = calloc(1, sizeof(cson_value));
     val->sql_type = SQLITE_FLOAT;
     val->u.dbl = v;
-    val->value_bytes = snprintf(val->value_buf, sizeof(val->value_buf), "%.15g", v);
+    int neg;
+    if (isnan(v)) {
+        val->value_bytes = snprintf(val->value_buf, sizeof(val->value_buf), "nan");
+    } else if ((neg = isinf(v)) != 0) {
+        val->value_bytes = snprintf(val->value_buf, sizeof(val->value_buf), "%sinf", neg < 0 ? "-" : "");
+    } else {
+        val->value_bytes = snprintf(val->value_buf, sizeof(val->value_buf), "%.15g", v);
+    }
     if (val->value_bytes < sizeof(val->value_buf)) {
         val->value_text = val->value_buf;
     } else {
