@@ -1775,6 +1775,7 @@ void reset_query_effects(struct sqlclntstate *clnt)
 {
     bzero(&clnt->effects, sizeof(clnt->effects));
     bzero(&clnt->log_effects, sizeof(clnt->effects));
+    bzero(&clnt->chunk_effects, sizeof(clnt->chunk_effects));
 }
 
 static char *sqlenginestate_tostr(int state)
@@ -3920,6 +3921,7 @@ int handle_sqlite_requests(struct sqlthdstate *thd, struct sqlclntstate *clnt)
     char *allocd_str = NULL;
 
     do {
+retry_legacy_remote:
         /* clean old stats */
         clear_cost(thd->sqlthd);
 
@@ -3937,6 +3939,11 @@ int handle_sqlite_requests(struct sqlthdstate *thd, struct sqlclntstate *clnt)
         }
         if (rc == SQLITE_SCHEMA_PUSH_REMOTE) {
             rc = handle_fdb_push(clnt, &err);
+            if (rc == -2) {
+                /* remote server does not support proxy, retry without */
+                clnt->disable_fdb_push = 1;
+                goto retry_legacy_remote;
+            }
             goto done;
         }
 
@@ -4496,6 +4503,7 @@ static int execute_verify_indexes(struct sqlthdstate *thd,
                                   struct sqlclntstate *clnt)
 {
     int rc;
+    stmt_cache_entry_t *cached_entry = NULL;
     if (thd->sqldb == NULL) {
         /* open sqlite db without copying rootpages */
         rc = sqlite3_open_serial("db", &thd->sqldb, thd);
@@ -4518,9 +4526,7 @@ static int execute_verify_indexes(struct sqlthdstate *thd,
             thd->stmt_cache = stmt_cache_new(NULL);
         }
 
-        stmt_cache_entry_t *cached_entry;
-        if ((stmt_cache_find_entry(thd->stmt_cache, clnt->sql,
-                                   &cached_entry)) == 0) {
+        if ((stmt_cache_find_and_remove_entry(thd->stmt_cache, clnt->sql, &cached_entry)) == 0) {
             stmt = cached_entry->stmt;
         }
     }
@@ -4539,7 +4545,10 @@ static int execute_verify_indexes(struct sqlthdstate *thd,
         clnt->has_sqliterow = 1;
         rc = verify_indexes_column_value(stmt, clnt->schema_mems);
         if (gbl_enable_internal_sql_stmt_caching) {
-            stmt_cache_add_entry(thd->stmt_cache, clnt->sql, 0, stmt, clnt);
+            if (cached_entry)
+                stmt_cache_requeue_old_entry(thd->stmt_cache, cached_entry);
+            else
+                stmt_cache_add_new_entry(thd->stmt_cache, clnt->sql, 0, stmt, clnt);
         } else {
             sqlite3_finalize(stmt);
         }
@@ -4547,7 +4556,10 @@ static int execute_verify_indexes(struct sqlthdstate *thd,
     }
 
     if (gbl_enable_internal_sql_stmt_caching) {
-        stmt_cache_add_entry(thd->stmt_cache, clnt->sql, 0, stmt, clnt);
+        if (cached_entry)
+            stmt_cache_requeue_old_entry(thd->stmt_cache, cached_entry);
+        else
+            stmt_cache_add_new_entry(thd->stmt_cache, clnt->sql, 0, stmt, clnt);
     } else {
         sqlite3_finalize(stmt);
     }
@@ -5272,6 +5284,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
 
     /* start off in comdb2 mode till we're told otherwise */
     clnt->dbtran.mode = tdef_to_tranlevel(gbl_sql_tranlevel_default);
+    clnt->dbtran.nchunks = 0;
     clnt->heartbeat = 0;
     clnt->limits.maxcost = gbl_querylimits_maxcost;
     clnt->limits.tablescans_ok = gbl_querylimits_tablescans_ok;
