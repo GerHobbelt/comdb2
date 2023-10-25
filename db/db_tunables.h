@@ -239,6 +239,14 @@ REGISTER_TUNABLE("disable_replicant_latches", "Disables 'replicant_latches'",
 REGISTER_TUNABLE("disable_rowlock_locking", NULL, TUNABLE_BOOLEAN,
                  &gbl_disable_rowlocks, READONLY | NOARG, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("stack_at_lock_get", "Stores stack-id for every lock-get.  (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_stack_at_lock_get, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("stack_at_lock_handle", "Stores stack-id for every lock-handle.  (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_stack_at_lock_handle, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("stack_at_write_lock", "Stores stack-id for every write-lock.  (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_stack_at_write_lock, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("stack_at_lock_gen_increment", "Stores stack-id when lock's generation increments.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_stack_at_lock_gen_increment, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("disable_seekscan_optimization",
                  "Disables SEEKSCAN optimization", TUNABLE_BOOLEAN,
                  &gbl_disable_seekscan_optimization, NOARG, NULL, NULL, NULL,
@@ -1706,6 +1714,12 @@ REGISTER_TUNABLE("random_get_curtran_failures",
                  TUNABLE_INTEGER, &gbl_random_get_curtran_failures,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("dont_block_delete_files_thread", "Ignore files that would block delete-files thread.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_txn_fop_noblock, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("debug_random_fop_block", "Randomly return .  (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_debug_random_block_on_fop, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("random_thdpool_work_timeout",
                  "Force a random thread pool work item timeout 1/this many "
                  "times.  (Default: 0)",
@@ -2194,6 +2208,8 @@ REGISTER_TUNABLE("debug_sleep_in_sql_tick", "Sleep for a second in sql tick.  (D
 REGISTER_TUNABLE("debug_sleep_in_analyze", "Sleep analyze sql tick.  (Default: off)", TUNABLE_BOOLEAN,
                  &gbl_debug_sleep_in_analyze, INTERNAL | EXPERIMENTAL, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("debug_sleep_in_summarize", "Sleep analyze summarize.  (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_debug_sleep_in_summarize, INTERNAL | EXPERIMENTAL, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("debug_consumer_lock",
                  "Enable debug-trace for consumer lock.  "
