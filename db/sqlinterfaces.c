@@ -329,11 +329,10 @@ again:
             /* Call only if there isn't a previous failure */
             if (!clnt->recover_deadlock_rcode) {
                 uint32_t flags = 0;
-                if (gbl_fail_client_write_lock && !(rand() %
-                            gbl_fail_client_write_lock))
+                if (gbl_fail_client_write_lock && !(rand() % gbl_fail_client_write_lock)) {
                     flags = RECOVER_DEADLOCK_FORCE_FAIL;
-                recover_deadlock_flags(thedb->bdb_env, thd, NULL, 0, __func__,
-                        __LINE__, flags);
+                }
+                recover_deadlock_flags(thedb->bdb_env, clnt, NULL, 0, __func__, __LINE__, flags);
             }
             clnt->need_recover_deadlock = 0;
             if (clnt->recover_deadlock_rcode) {
@@ -771,18 +770,6 @@ static void record_locked_vtable(struct sql_authorizer_state *pAuthState, const 
     const char *vtable_lock = vtable_lockname(pAuthState->db, table, &is_system_table);
     if (table != NULL && (strcmp(table, "comdb2_triggers") == 0)) {
         pAuthState->flags |= PREPARE_ACQUIRE_SPLOCK;
-    }
-    if (table != NULL && (strncasecmp(table, "comdb2_", 7) == 0)) {
-        table += 7;
-        if (strcasecmp(table, "tables") == 0 ||
-            strcasecmp(table, "columns") == 0 ||
-            strcasecmp(table, "keys") == 0 ||
-            strcasecmp(table, "keycomponents") == 0 ||
-            strcasecmp(table, "timepartitions") == 0 ||
-            strcasecmp(table, "timepartshards") == 0 ||
-            strcasecmp(table, "timepartevents") == 0) {
-            pAuthState->flags |= PREPARE_ACQUIRE_VIEWSLK;
-        }
     }
     if (vtable_lock && !vtable_search(pAuthState->vTableLocks, pAuthState->numVTableLocks, vtable_lock)) {
         pAuthState->vTableLocks =
@@ -2677,19 +2664,13 @@ static int check_thd_gen(struct sqlthdstate *thd, struct sqlclntstate *clnt, int
 int release_locks_int(const char *trace, const char *func, int line)
 {
     struct sql_thread *thd = pthread_getspecific(query_info_key);
-    struct sqlclntstate *clnt = thd ? thd->clnt : NULL;
-    int rc = -1;
-
-    if (clnt && clnt->dbtran.cursor_tran) {
-        extern int gbl_sql_release_locks_trace;
-        if (gbl_sql_release_locks_trace)
-            logmsg(LOGMSG_USER, "Releasing locks for lockid %d, %s\n",
-                   bdb_get_lid_from_cursortran(clnt->dbtran.cursor_tran),
-                   trace);
-        rc = recover_deadlock_flags(thedb->bdb_env, thd, NULL, -1, func, line,
-                0);
+    if (!thd || !thd->clnt || !thd->clnt->dbtran.cursor_tran) return -1;
+    extern int gbl_sql_release_locks_trace;
+    if (gbl_sql_release_locks_trace) {
+        logmsg(LOGMSG_USER, "Releasing locks for lockid %d, %s\n",
+               bdb_get_lid_from_cursortran(thd->clnt->dbtran.cursor_tran), trace);
     }
-    return rc;
+    return recover_deadlock_flags(thedb->bdb_env, thd->clnt, NULL, -1, func, line, 0);
 }
 
 /* Release-locks if rep-thread is blocked longer than this many ms */
@@ -5499,8 +5480,7 @@ int recover_deadlock_evbuffer(struct sqlclntstate *clnt)
     if (gbl_fail_client_write_lock && !(rand() % gbl_fail_client_write_lock)) {
         flags = RECOVER_DEADLOCK_FORCE_FAIL;
     }
-    struct sql_thread *thd = clnt->thd->sqlthd;
-    if (!recover_deadlock_flags(env, thd, NULL, 0, __func__, __LINE__, flags)) {
+    if (!recover_deadlock_flags(env, clnt, NULL, 0, __func__, __LINE__, flags)) {
         return -1;
     }
     return 0;
@@ -6858,6 +6838,7 @@ int add_appsock_connection_evbuffer(struct sqlclntstate *clnt)
     int warn = bdb_attr_get(thedb->bdb_attr, BDB_ATTR_APPSOCKSLIMIT);
     int lim = warn < max ? warn : max;
     int current = ATOMIC_ADD32(active_appsock_conns, 1);
+    time_metric_add(thedb->connections, current);
     if (current > lim) {
         static time_t last_trace = 0;
         time_t now = time(NULL);
