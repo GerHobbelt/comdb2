@@ -146,6 +146,7 @@ struct fdb {
     fdb_sqlstat_cache_t *sqlstats; /* cache of sqlite stats, per foreign db */
     pthread_mutex_t sqlstats_mtx;  /* mutex for stats */
 
+    int has_sqlstat1; /* if sqlstat1 was found */
     int has_sqlstat4; /* if sqlstat4 was found */
 
     int server_version; /* save the server_version */
@@ -691,7 +692,7 @@ static int _table_exists(fdb_t *fdb, const char *table_name,
  * to original table tbl; (I did that to run only a query first time)
  * They really belong to the fdb, lets properly link them now
  *
- * Returns -1 for ENOMEM
+ * Returns -1 for ENOMEM or if cannot find stat_name
  */
 int fix_table_stats(fdb_t *fdb, fdb_tbl_t *tbl, const char *stat_name)
 {
@@ -701,10 +702,15 @@ int fix_table_stats(fdb_t *fdb, fdb_tbl_t *tbl, const char *stat_name)
     /* alloc table */
     stat_tbl = _alloc_table_fdb(fdb, stat_name);
     if (!stat_tbl) {
+        logmsg(LOGMSG_ERROR, "%s: OOM %s for %p\n", __func__, stat_name, tbl);
         return -1;
     }
 
     stat_ent = get_fdb_tbl_ent_by_name_from_fdb(fdb, stat_name);
+    if (!stat_ent) {
+        logmsg(LOGMSG_ERROR, "%s: Cannot find %s for %p\n", __func__, stat_name, tbl);
+        return -1;
+    }
     /*
        fprintf(stderr, "XYXY: for \"%s\" fixing table from \"%s\" to \"%s\"\n",
        stat_name, found_ent->tbl->name, tbl_stat->name);
@@ -865,10 +871,10 @@ static int _add_table_and_stats_fdb(fdb_t *fdb, const char *table_name,
 
     if (initial) {
         /* we have a table, lets get the sqlite_stats */
-        if (strncasecmp(table_name, "sqlite_stat1", 13) != 0) {
+        if (fdb->has_sqlstat1 &&
+            strncasecmp(table_name, "sqlite_stat1", 13) != 0) {
             rc = fix_table_stats(fdb, tbl, "sqlite_stat1");
             if (rc) {
-                logmsg(LOGMSG_ERROR, "%s: OOM stat1 for %p\n", __func__, tbl);
                 goto done;
             }
         }
@@ -877,7 +883,6 @@ static int _add_table_and_stats_fdb(fdb_t *fdb, const char *table_name,
             strncasecmp(table_name, "sqlite_stat4", 13) != 0) {
             rc = fix_table_stats(fdb, tbl, "sqlite_stat4");
             if (rc) {
-                logmsg(LOGMSG_ERROR, "%s: OOM stat4\n", __func__);
                 goto done;
             }
         }
@@ -1220,25 +1225,35 @@ static int __check_sqlite_stat(sqlite3 *db, fdb_tbl_ent_t *ent, Table *tab)
 
 static int _fdb_check_sqlite3_cached_stats(sqlite3 *db, fdb_t *fdb)
 {
+    int rc = SQLITE_OK;
     if (sqlite3_is_preparer(db))
         return SQLITE_OK;
 
+    char *dbname = fdb->local == 0 ? fdb->dbname :
+        sqlite3_mprintf("LOCAL_%s", fdb->dbname);
     fdb_tbl_ent_t *stat_ent;
     Table *stat_tab;
 
     stat_ent = get_fdb_tbl_ent_by_name_from_fdb(fdb, "sqlite_stat1");
-    stat_tab = sqlite3FindTableCheckOnly(db, "sqlite_stat1", fdb->dbname);
+    stat_tab = sqlite3FindTableCheckOnly(db, "sqlite_stat1", dbname);
 
-    if (__check_sqlite_stat(db, stat_ent, stat_tab) != SQLITE_OK)
-        return SQLITE_SCHEMA_REMOTE;
+    if (__check_sqlite_stat(db, stat_ent, stat_tab) != SQLITE_OK) {
+        rc = SQLITE_SCHEMA_REMOTE;
+        goto remote;
+    }
 
     stat_ent = get_fdb_tbl_ent_by_name_from_fdb(fdb, "sqlite_stat4");
-    stat_tab = sqlite3FindTableCheckOnly(db, "sqlite_stat4", fdb->dbname);
+    stat_tab = sqlite3FindTableCheckOnly(db, "sqlite_stat4", dbname);
 
-    if (__check_sqlite_stat(db, stat_ent, stat_tab) != SQLITE_OK)
-        return SQLITE_SCHEMA_REMOTE;
+    if (__check_sqlite_stat(db, stat_ent, stat_tab) != SQLITE_OK) {
+        rc = SQLITE_SCHEMA_REMOTE;
+        goto remote;
+    }
 
-    return SQLITE_OK;
+remote:
+    if (dbname != fdb->dbname)
+        sqlite3_free(dbname);
+    return rc;
 }
 
 static int _failed_AddAndLockTable(const char *dbname, int errcode,
@@ -1804,6 +1819,9 @@ static int insert_table_entry_from_packedsqlite(fdb_t *fdb, fdb_tbl_t *tbl,
     hash_add(fdb->h_ents_rootp, ent);
     hash_add(fdb->h_ents_name, ent);
 
+    if (strcasecmp(ent->name, "sqlite_stat1") == 0) {
+        fdb->has_sqlstat1 = 1;
+    }
     if (strcasecmp(ent->name, "sqlite_stat4") == 0) {
         fdb->has_sqlstat4 = 1;
     }
