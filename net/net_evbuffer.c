@@ -340,7 +340,7 @@ struct host_connected_info;
 
 struct event_info {
     host_node_type *host_node_ptr;
-    LIST_HEAD(, host_connected_info) host_connected_list;
+    TAILQ_HEAD(host_connected_list, host_connected_info) host_connected_list;
     LIST_ENTRY(event_info) host_list_entry;
     LIST_ENTRY(event_info) net_list_entry;
     int fd;
@@ -663,7 +663,7 @@ static struct event_info *event_info_new(struct net_info *n, struct host_info *h
     struct event_info *e = calloc(1, sizeof(struct event_info));
     LIST_INSERT_HEAD(&h->event_list, e, host_list_entry);
     LIST_INSERT_HEAD(&n->event_list, e, net_list_entry);
-    LIST_INIT(&e->host_connected_list);
+    TAILQ_INIT(&e->host_connected_list);
     e->fd = -1;
     e->host = h->host;
     e->service = n->service;
@@ -693,7 +693,7 @@ static struct event_info *event_info_new(struct net_info *n, struct host_info *h
 }
 
 struct host_connected_info {
-    LIST_ENTRY(host_connected_info) entry;
+    TAILQ_ENTRY(host_connected_info) entry;
     int fd;
     struct event_info *e;
     int connect_msg;
@@ -706,13 +706,13 @@ host_connected_info_new(struct event_info *e, int fd, int connect_msg)
     info->e = e;
     info->fd = fd;
     info->connect_msg = connect_msg;
-    LIST_INSERT_HEAD(&e->host_connected_list, info, entry);
+    TAILQ_INSERT_TAIL(&e->host_connected_list, info, entry);
     return info;
 }
 
 static void host_connected_info_free(struct host_connected_info *info)
 {
-    LIST_REMOVE(info, entry);
+    TAILQ_REMOVE(&info->e->host_connected_list, info, entry);
     free(info);
 }
 
@@ -887,6 +887,7 @@ static void disable_write(int dummyfd, short what, void *data)
         e->fd = -1;
     }
     Pthread_mutex_unlock(&e->wr_lk);
+    hputs("DISABLED\n");
     evtimer_once(base, d->func, e);
     free(d);
 }
@@ -912,6 +913,7 @@ static void disable_read(int dummyfd, short what, void *data)
     struct disable_info *d = data;
     struct event_info *e = d->e;
     do_disable_read(e);
+    hputs("DISABLED\n");
     evtimer_once(wr_base, disable_write, d);
 }
 
@@ -933,6 +935,7 @@ static void disable_heartbeats(int dummyfd, short what, void *data)
     struct disable_info *d = data;
     struct event_info *e = d->e;
     do_disable_heartbeats(e);
+    hputs("DISABLED\n");
     evtimer_once(rd_base, disable_read, d);
 }
 
@@ -941,11 +944,13 @@ static void do_host_close(int dummyfd, short what, void *data)
     struct disable_info *d = data;
     struct event_info *e = d->e;
     host_node_close(e->host_node_ptr);
+    hputs("CLOSED\n");
     evtimer_once(timer_base, disable_heartbeats, d);
 }
 
 static void do_close(struct event_info *e, event_callback_fn func)
 {
+    hputs("HOST DOWN ROUTINE\n");
     netinfo_type *netinfo_ptr = e->net_info->netinfo_ptr;
     if (netinfo_ptr->hostdown_rtn) {
         netinfo_ptr->hostdown_rtn(netinfo_ptr, e->host);
@@ -1197,6 +1202,7 @@ static void stop_base(struct event_base *b)
 static int net_stop = 1;
 static void exit_once_func(void)
 {
+    logmsg(LOGMSG_USER, "%s: STOP NET\n", __func__);
     struct net_info *n;
     struct host_info *h;
     struct event_info *e;
@@ -1290,6 +1296,7 @@ static void exit_once_func(void)
     }
     Pthread_cond_destroy(&exit_cond);
     Pthread_mutex_destroy(&exit_mtx);
+    logmsg(LOGMSG_USER, "%s: STOPPED NET\n", __func__);
 }
 
 static void heartbeat_check(int dummyfd, short what, void *data)
@@ -1766,18 +1773,28 @@ static void resume_read(int dummyfd, short what, void *data)
 
 static void do_queued(int dummyfd, short what, void *data)
 {
+    check_base_thd();
     struct event_info *e = data;
-    struct host_connected_info *info = LIST_FIRST(&e->host_connected_list);
+    struct host_connected_info *info = TAILQ_FIRST(&e->host_connected_list);
+    struct host_connected_info *last = TAILQ_LAST(&e->host_connected_list, host_connected_list);
+    while (info != last) {
+        hprintf("CLOSING OLD PENDING CONNECTION fd:%d\n", info->fd);
+        shutdown_close(info->fd);
+        host_connected_info_free(info);
+        info = TAILQ_FIRST(&e->host_connected_list);
+    }
+    hprintf("PROCESSING CONNECTION fd:%d\n", info->fd);
     evtimer_once(base, do_open, info);
 }
 
 static void finish_host_setup(int dummyfd, short what, void *data)
 {
+    check_base_thd();
     struct host_connected_info *i = data;
     struct event_info *e = i->e;
     int connect_msg = i->connect_msg;
     host_connected_info_free(i);
-    if (!LIST_EMPTY(&e->host_connected_list)) {
+    if (!TAILQ_EMPTY(&e->host_connected_list)) {
         hputs("WORKING ON QUEUED CONNECTION\n");
         do_close(e, do_queued);
     } else if (connect_msg) {
@@ -1803,6 +1820,7 @@ static void enable_heartbeats(int dummyfd, short what, void *data)
     e->hb_send_ev = event_new(timer_base, -1, EV_PERSIST, heartbeat_send, e);
     event_add(e->hb_check_ev, &one_sec);
     event_add(e->hb_send_ev, &one_sec);
+    hputs("ENABLE\n");
     evtimer_once(base, finish_host_setup, i);
 }
 
@@ -1820,6 +1838,7 @@ static void enable_read(int dummyfd, short what, void *data)
     e->rd_buf = evbuffer_new();
     e->rd_ev = event_new(rd_base, e->fd, EV_READ | EV_PERSIST, readcb, e);
     event_add(e->rd_ev, NULL);
+    hputs("ENABLE\n");
     evtimer_once(timer_base, enable_heartbeats, i);
 }
 
@@ -1839,14 +1858,15 @@ static void enable_write(int dummyfd, short what, void *data)
     e->wr_full = 0;
     e->decomissioned = 0;
     Pthread_mutex_unlock(&e->wr_lk);
+    hputs("ENABLE\n");
     evtimer_once(rd_base, enable_read, i);
 }
 
 static void do_open(int dummyfd, short what, void *data)
 {
+    check_base_thd();
     struct host_connected_info *i = data;
     struct event_info *e = i->e;
-    check_base_thd();
     host_node_open(e->host_node_ptr, i->fd);
     evtimer_once(wr_base, enable_write, i);
 }
@@ -1854,11 +1874,13 @@ static void do_open(int dummyfd, short what, void *data)
 static void host_connected(struct event_info *e, int fd, int connect_msg)
 {
     check_base_thd();
-    int dispatch = LIST_EMPTY(&e->host_connected_list);
+    int dispatch = TAILQ_EMPTY(&e->host_connected_list);
     host_connected_info_new(e, fd, connect_msg);
     if (dispatch) {
         hprintf("PROCESSING CONNECTION fd:%d\n", fd);
         do_close(e, do_queued);
+    } else {
+        hprintf("ADDED TO CONNECTION QUEUE fd:%d\n", fd);
     }
 }
 
@@ -1883,9 +1905,9 @@ static void comdb2_connected(int fd, short what, void *data)
     }
     if (e->fd != -1) {
         hputs("HAVE ACTIVE CONNECTION\n");
-    } else if (!LIST_EMPTY(&e->host_connected_list)) {
-        struct host_connected_info *i = LIST_FIRST(&e->host_connected_list);
-        hprintf("HAVE PENDING CONNECTION fd:%d\n", i->fd);
+    } else if (!TAILQ_EMPTY(&e->host_connected_list)) {
+        struct host_connected_info *info = TAILQ_LAST(&e->host_connected_list, host_connected_list);
+        hprintf("HAVE PENDING CONNECTION fd:%d\n", info->fd);
     } else if (!skip_connect(e)) {
         hprintf("MADE NEW CONNECTION fd:%d\n", fd);
         host_connected(e, fd, 1);
@@ -2044,7 +2066,7 @@ static void pmux_reconnect(struct connect_info *c)
     struct event_info *e = c->e;
     hprintf("FAILED CONNECTING fd:%d\n", c->fd);
     connect_info_free(c);
-    if (e->fd == -1 && LIST_EMPTY(&e->host_connected_list)) {
+    if (e->fd == -1 && TAILQ_EMPTY(&e->host_connected_list)) {
         do_reconnect(-1, 0, e);
     }
 }
