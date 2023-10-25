@@ -58,6 +58,7 @@ __lc_cache_init(DB_ENV *dbenv, int reinit)
 	for (int i = 0; i < dbenv->attr.cache_lc_max; i++) {
 		lcc->ent[i].cacheid = i;
 		lcc->ent[i].lc.memused = 0;
+		lcc->ent[i].lc.child_utxnids = NULL;
 		listc_abl(&lcc->avail, &lcc->ent[i]);
 	}
 	lcc->nent = dbenv->attr.cache_lc_max;
@@ -95,6 +96,15 @@ free_lsn_collection(DB_ENV *dbenv, LSN_COLLECTION * lc)
 		}
 	}
 	__os_free(dbenv, lc->array);
+	if (lc->child_utxnids != NULL) {
+		UTXNID *elt, *tmp;
+
+		LISTC_FOR_EACH_SAFE(lc->child_utxnids, elt, tmp, lnk) {
+			__os_free(dbenv, elt);
+		}
+		__os_free(dbenv, lc->child_utxnids);
+		lc->child_utxnids = NULL;
+	}
 	lc->array = 0;
 	lc->nalloc = 0;
 	lc->nlsns = 0;
@@ -253,7 +263,9 @@ __lc_cache_feed(DB_ENV *dbenv, DB_LSN lsn, DBT dbt)
 	LOGCOPY_TOLSN(&prevlsn, logrec);
 	logrec += sizeof(DB_LSN);
 
-	if (normalize_rectype(&type)) {
+	int have_child_utxnid;
+
+	if ((have_child_utxnid = normalize_rectype(&type)) != 0) {
 		LOGCOPY_64(&utxnid, logrec);
 		logrec += sizeof(u_int64_t);
 	}
@@ -466,10 +478,16 @@ __lc_cache_feed(DB_ENV *dbenv, DB_LSN lsn, DBT dbt)
 	 * rid of the child. */
 	if (type == DB___txn_child) {
 		u_int32_t child_txnid;
+		u_int64_t child_utxnid = 0;
 		DB_LSN c_lsn;
+		UTXNID *utxnid_track;
 
 		LOGCOPY_32(&child_txnid, logrec);
 		logrec += sizeof(u_int32_t);
+		if (have_child_utxnid) {
+			LOGCOPY_64(&child_utxnid, logrec);
+			logrec += sizeof(u_int64_t);
+		}
 		LOGCOPY_TOLSN(&c_lsn, logrec);
 		logrec += sizeof(DB_LSN);
 
@@ -528,6 +546,20 @@ __lc_cache_feed(DB_ENV *dbenv, DB_LSN lsn, DBT dbt)
 				ce->lc.nlsns = 0;
 				listc_rfl(&dbenv->lc_cache.lru, ce);
 				free_ent(dbenv, ce);
+
+				if ((ret = __os_malloc(dbenv, sizeof(UTXNID), &utxnid_track)) != 0) {
+					goto err;
+				}
+				if (e->lc.child_utxnids == NULL) {
+					if ((ret= __os_malloc(dbenv, sizeof(LISTC_T(UTXNID)), &e->lc.child_utxnids) != 0)) {
+						goto err;
+					}
+
+					listc_init(e->lc.child_utxnids, offsetof(UTXNID, lnk));
+				}
+
+				utxnid_track->utxnid = child_utxnid;
+				listc_atl(e->lc.child_utxnids, utxnid_track);
 				break;
 			}
 		}
@@ -591,6 +623,7 @@ __lc_cache_get(DB_ENV *dbenv, DB_LSN *lsnp, LSN_COLLECTION * lcout,
 				    PARM_LSNP(lsnp), e->txnid);
 
 			*lcout = e->lc;
+
 			/* lcout now has a copy of lc which must be freed by the caller. */
 			e->lc.nlsns = 0;
 			e->lc.nalloc = 0;
@@ -599,6 +632,7 @@ __lc_cache_get(DB_ENV *dbenv, DB_LSN *lsnp, LSN_COLLECTION * lcout,
 			e->lc.had_serializable_records = 0;
 			e->txnid = 0;
 			e->utxnid = 0;
+			e->lc.child_utxnids = NULL;
 			// printf("%d %d\n", dbenv->lc_cache.memused, e->lc.memused);
 			dbenv->lc_cache.memused -= e->lc.memused;
 			e->lc.memused = 0;
