@@ -413,7 +413,6 @@ static char *legacy_options[] = {
     "on disable_etc_services_lookup",
     "online_recovery off",
     "osql_send_startgen off",
-    "reorder_socksql_no_deadlock off",
     "setattr DIRECTIO 0",
     "setattr ENABLE_SEQNUM_GENERATIONS 0",
     "setattr MASTER_LEASE 0",
@@ -427,7 +426,7 @@ static char *legacy_options[] = {
     "init_with_queue_persistent_sequence off",
     "usenames",
     "setattr max_sql_idle_time 864000",
-    "utxnid_log off"
+    "utxnid_log off",
     "commit_lsn_map off"
 };
 int gbl_legacy_defaults = 0;
