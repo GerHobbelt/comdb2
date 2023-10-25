@@ -1958,31 +1958,6 @@ more:
 				dbenv->newest_rep_verify_tran_time = t;
 				dbenv->rep_verify_start_lsn = rp->lsn;
 			}
-
-			if (dbenv->newest_rep_verify_tran_time &&
-				dbenv->attr.max_backout_seconds &&
-				(dbenv->newest_rep_verify_tran_time - timestamp >
-				dbenv->attr.max_backout_seconds)) {
-				ctime_r(&dbenv->newest_rep_verify_tran_time,
-					start_time);
-				ctime_r(&t, my_time);
-				__db_err(dbenv,
-					"Rolled back too far at %u:%u:\n   started at %s   now at %s",
-					rp->lsn.file, rp->lsn.offset, start_time,
-					my_time);
-				ret = EINVAL;
-				goto rep_verify_err;
-			}
-			if (dbenv->newest_rep_verify_tran_time &&
-				dbenv->attr.max_backout_logs &&
-				((dbenv->rep_verify_start_lsn.file - rp->lsn.file) >
-				dbenv->attr.max_backout_logs)) {
-				__db_err(dbenv,
-					"Rolled back too far at %u:%u, started at %s\n",
-					rp->lsn.file, rp->lsn.offset, start_time);
-				ret = EINVAL;
-				goto rep_verify_err;
-			}
 		}
 		dbenv->rep_verify_current_lsn = rp->lsn;
 
@@ -7429,7 +7404,7 @@ __truncate_repdb(dbenv)
 		return 0;
 	}
 
-	if (!F_ISSET(rep, REP_ISCLIENT) || !db_rep->rep_db)
+	if ((!F_ISSET(rep, REP_ISCLIENT) && !gbl_is_physical_replicant) || !db_rep->rep_db)
 		return DB_NOTFOUND;
 
 	MUTEX_LOCK(dbenv, db_rep->db_mutexp);
