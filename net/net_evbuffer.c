@@ -75,7 +75,7 @@
 
 #define TCP_BUFSZ MB(8)
 #define SBUF2UNGETC_BUF_MAX 8 /* See also, util/sbuf2.c */
-#define MAX_DISTRESS_COUNT 10
+#define MAX_DISTRESS_COUNT 3
 
 #define hprintf_lvl LOGMSG_USER
 #define hprintf_format(a) "[%.3s %-8s fd:%-3d %20s] " a, e->service, e->host, e->fd, __func__
@@ -3196,6 +3196,7 @@ static void get_hosts_evbuffer_impl(void *arg)
     int i = 1;
     struct event_info *e;
     LIST_FOREACH(e, &n->event_list, net_list_entry) {
+        if (e->decomissioned) continue;
         info->hosts[i] = e->host_node_ptr;
         ++i;
         if (i == info->max_hosts) {
