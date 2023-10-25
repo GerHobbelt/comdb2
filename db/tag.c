@@ -200,27 +200,31 @@ void add_tag_schema(const char *table, struct schema *schema)
     unlock_taglock();
 }
 
+static void _tags_free_schema(struct dbtag *tag, struct schema *s,
+                              const char *tablename)
+{
+    if (_dbg_tags)
+        logmsg(LOGMSG_DEBUG, "2 Removing %s:%s\n", tablename, s->tag);
+    hash_del(tag->tags, s);
+    listc_rfl(&tag->taglist, s);
+    freeschema(s);
+}
+
+
 static void del_tag_schema_lk(const char *table, const char *tagname)
 {
     struct dbtag *tag = hash_find_readonly(gbl_tag_hash, &table);
     if (tag == NULL)
         return;
 
-    struct schema *sc = hash_find(tag->tags, &tagname);
+    struct schema *s = hash_find(tag->tags, &tagname);
 
-    if (sc) {
-        if (_dbg_tags)
-            logmsg(LOGMSG_DEBUG, "2 Removing %s:%s\n", table, sc->tag);
-        hash_del(tag->tags, sc);
+    if (s) {
 #if defined DEBUG_STACK_TAG_SCHEMA
         comdb2_cheapstack_sym(stderr, "%s:%d -> %s:%s ", __func__, __LINE__,
                               table, tagname);
 #endif
-        listc_rfl(&tag->taglist, sc);
-        if (sc->datacopy) {
-            free(sc->datacopy);
-            sc->datacopy = NULL;
-        }
+        _tags_free_schema(tag, s, table);
     }
 }
 
@@ -1463,11 +1467,7 @@ void add_tag_alias(const char *table, struct schema *s, char *name, int table_nm
     /* Don't add dupes! */
     old = hash_find(tag->tags, &sc->tag);
     if (old) {
-        listc_rfl(&tag->taglist, old);
-        if (_dbg_tags)
-            logmsg(LOGMSG_DEBUG, "3 Removing %s:%s\n", table, old->tag);
-        hash_del(tag->tags, old);
-        freeschema(old);
+        _tags_free_schema(tag, old, table);
     }
 
     if (_dbg_tags)
@@ -3934,6 +3934,12 @@ int compare_tag_int(struct schema *old, struct schema *new, FILE *out,
                         return SC_BAD_DBSTORE_FUNC_NOT_NULL;
                     }
 
+                    if ((fnew->in_default_type == SERVER_DATETIME || fnew->in_default_type == SERVER_DATETIMEUS) &&
+                        stype_is_null(fnew->in_default) && (fnew->flags & NO_NULL)) {
+                        if (out)
+                            logmsg(LOGMSG_ERROR, "field %s must be nullable to use CURRENT_TIMESTAMP\n", fold->name);
+                        return SC_BAD_DBSTORE_FUNC_NOT_NULL;
+                    }
                 } else {
                     assert(fold->in_default_len == fnew->in_default_len);
                     int len = fold->in_default_len;
@@ -4065,6 +4071,12 @@ int compare_tag_int(struct schema *old, struct schema *new, FILE *out,
         }
         if (!found) {
             int allow_null = !(fnew->flags & NO_NULL);
+            int dbstore_type = fnew->in_default_type;
+            int is_datetime_type = (dbstore_type == SERVER_DATETIME || dbstore_type == SERVER_DATETIMEUS);
+            int is_current_timestamp = (is_datetime_type && stype_is_null(fnew->in_default));
+            int is_function = (is_current_timestamp || dbstore_type == SERVER_FUNCTION);
+            int requires_null = (is_function || dbstore_type == SERVER_SEQUENCE);
+
             if (SERVER_VUTF8 == fnew->type &&
                 fnew->in_default_len > (fnew->len - 5)) {
                 rc = SC_TAG_CHANGE;
@@ -4074,20 +4086,20 @@ int compare_tag_int(struct schema *old, struct schema *new, FILE *out,
                             old->tag, nidx, fnew->name);
                 }
                 break;
-            } else if (allow_null || (fnew->in_default && fnew->in_default_type != SERVER_SEQUENCE &&
-                                      fnew->in_default_type != SERVER_FUNCTION)) {
+            } else if (allow_null || (fnew->in_default && !requires_null)) {
                 rc = SC_COLUMN_ADDED;
                 if (out) {
                     logmsg(LOGMSG_INFO, "tag %s has new field %d (named %s)\n",
                             old->tag, nidx, fnew->name);
                 }
-            } else if (!allow_null && fnew->in_default_type == SERVER_FUNCTION) {
+            } else if (!allow_null && is_function) {
                 rc = SC_BAD_DBSTORE_FUNC_NOT_NULL;
                 if (out) {
                     logmsg(LOGMSG_INFO, "tag %s has new field %d (named %s)"
                            "that uses a dbstore function but isn't nullable\n",
                            old->tag, nidx, fnew->name);
                 }
+                break;
             } else {
                 if (out) {
                     logmsg(LOGMSG_INFO, "tag %s has new field %d (named %s) without "
@@ -4687,7 +4699,6 @@ void free_dynamic_schema(const char *table, struct schema *dsc)
         return;
 
     del_tag_schema(table, dsc->tag);
-    free_tag_schema(dsc);
 }
 
 struct schema *new_dynamic_schema(const char *s, int len, int trace)
@@ -5127,11 +5138,7 @@ static int backout_schemas_lockless(const char *tblname)
         tmp = sc->lnk.next;
         if (strncasecmp(sc->tag, ".NEW.", 5) == 0) {
             /* new addition? delete */
-            listc_rfl(&dbt->taglist, sc);
-            if (_dbg_tags)
-                logmsg(LOGMSG_DEBUG, "4 Removing %s:%s\n", tblname, sc->tag);
-            hash_del(dbt->tags, sc);
-            freeschema(sc);
+            _tags_free_schema(dbt, sc, tblname);
         }
         sc = tmp;
     }
@@ -6055,7 +6062,6 @@ struct schema *create_version_schema(char *csc2, int version,
 
     /* get rid of temp schema */
     del_tag_schema(ver_db->tablename, s->tag);
-    freeschema(s);
 
     /* get rid of temp table */
     delete_schema(ver_db->tablename);
@@ -6068,19 +6074,13 @@ done:
 
 static void clear_existing_schemas(dbtable *db)
 {
-    struct schema *schema;
     char tag[64];
     int i;
     for (i = 1; i <= db->schema_version; ++i) {
         sprintf(tag, gbl_ondisk_ver_fmt, i);
-        schema = find_tag_schema(db, tag);
         del_tag_schema(db->tablename, tag);
-        freeschema(schema);
     }
-
-    schema = find_tag_schema(db, ".ONDISK");
     del_tag_schema(db->tablename, ".ONDISK");
-    freeschema(schema);
 }
 
 static int load_new_versions(dbtable *db, tran_type *tran)
