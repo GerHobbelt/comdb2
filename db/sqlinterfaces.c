@@ -768,9 +768,6 @@ static void record_locked_vtable(struct sql_authorizer_state *pAuthState, const 
 {
     int is_system_table;
     const char *vtable_lock = vtable_lockname(pAuthState->db, table, &is_system_table);
-    if (table != NULL && (strcmp(table, "comdb2_triggers") == 0)) {
-        pAuthState->flags |= PREPARE_ACQUIRE_SPLOCK;
-    }
     if (vtable_lock && !vtable_search(pAuthState->vTableLocks, pAuthState->numVTableLocks, vtable_lock)) {
         pAuthState->vTableLocks =
             (char **)realloc(pAuthState->vTableLocks, sizeof(char *) * (pAuthState->numVTableLocks + 1));
@@ -3713,7 +3710,7 @@ static int post_sqlite_processing(struct sqlthdstate *thd,
 static int run_stmt(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                     struct sql_state *rec, int *fast_error, struct errstat *err)
 {
-    int rc;
+    int rc, t_rc;
     uint64_t row_id = 0;
     int rowcount = 0;
     int postponed_write = 0;
@@ -3818,8 +3815,12 @@ postprocessing:
        and we must reset the state */
     if (rc == SQLITE_EARLYSTOP_DOHSQL)
         sqlite3_reset(stmt);
+    if (rc == SQLITE_DONE || rc == SQLITE_OK) /* good rcodes */
+        rc = 0;
     /* closing: error codes, postponed write result and so on*/
-    rc = post_sqlite_processing(thd, clnt, rec, postponed_write, row_id);
+    t_rc = post_sqlite_processing(thd, clnt, rec, postponed_write, row_id);
+    if (t_rc != 0 && rc == 0)
+        rc = t_rc;
 
     return rc;
 }
