@@ -455,8 +455,6 @@ REGISTER_TUNABLE("enque_flush_interval", NULL, TUNABLE_INTEGER,
 REGISTER_TUNABLE("enque_reorder_lookahead", NULL, TUNABLE_INTEGER,
                  &gbl_enque_reorder_lookahead, READONLY, NULL, NULL, NULL,
                  NULL);
-REGISTER_TUNABLE("env_messages", NULL, TUNABLE_BOOLEAN, &gbl_noenv_messages,
-                 INVERSE_VALUE | READONLY | NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("epochms_repts", NULL, TUNABLE_BOOLEAN,
                  &gbl_berkdb_epochms_repts, READONLY | NOARG, NULL, NULL, NULL,
                  NULL);
@@ -804,8 +802,6 @@ REGISTER_TUNABLE("nodeid", NULL, TUNABLE_INTEGER, &gbl_mynodeid, READONLY, NULL,
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("noearly", "Disables 'early'", TUNABLE_BOOLEAN, &gbl_early,
                  INVERSE_VALUE | READONLY | NOARG, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("noenv_messages", NULL, TUNABLE_BOOLEAN, &gbl_noenv_messages,
-                 READONLY | NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("no_epochms_repts", "Disables 'epochms_repts'",
                  TUNABLE_BOOLEAN, &gbl_berkdb_epochms_repts,
                  INVERSE_VALUE | READONLY | NOARG, NULL, NULL, NULL, NULL);
@@ -1185,6 +1181,12 @@ REGISTER_TUNABLE("toblock_net_throttle",
 REGISTER_TUNABLE("track_berk_locks", NULL, TUNABLE_INTEGER,
                  &gbl_berkdb_track_locks, READONLY | NOARG, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("typessql", "Use typessql to attempt to buffer results until all columns are non-null. (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_typessql, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE(
+    "typessql_records_max",
+    "The maximum number of records for typessql to buffer and find non-null types before giving up. (Default: 1000)",
+    TUNABLE_INTEGER, &gbl_typessql_records_max, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("db_lock_maxid_override", "Override berkley lock_maxid for "
                  "testing. (Default: 0)", TUNABLE_INTEGER,
                  &gbl_db_lock_maxid_override, EXPERIMENTAL | INTERNAL, NULL,

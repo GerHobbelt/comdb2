@@ -33,6 +33,7 @@
 #include "sqliteInt.h"
 #include "vdbeInt.h"
 #include "comdb2uuid.h"
+#include "net_int.h"
 
 /**
  * REMOTE SQL VERSIONING
@@ -176,7 +177,6 @@ struct fdb_tran {
         cursors; /* list of cursors for tran (used on backend side) */
 
     uuid_t tiduuid;
-    int isuuid;
 
     int seq; /* sequencing tran begin/commit/rollback, writes, cursor open/close
                 */
@@ -190,6 +190,11 @@ struct fdb_tran {
     struct temp_table *dedup_tbl;
     struct temp_cursor *dedup_cur;
     int nwrites; /* number of writes (ins/upd/del) issues on the fdb tran */
+
+    /**
+     * libevent heartbeats
+     */
+    fdb_hbeats_type hbeats;
 };
 typedef struct fdb_tran fdb_tran_t;
 
@@ -234,7 +239,6 @@ typedef struct fdb_cursor_if {
     fdb_tbl_ent_t *(*table_entry)(BtCursor *pCur);
 
     int (*access)(BtCursor *pCur, int how);
-    int (*isuuid)(BtCursor *pCur);
 
 } fdb_cursor_if_t;
 
@@ -404,7 +408,7 @@ int fdb_unlock_table(fdb_tbl_ent_t *ent);
  * Send heartbeats to remote dbs in a distributed transaction
  *
  */
-int fdb_heartbeats(struct sqlclntstate *clnt);
+int fdb_heartbeats(fdb_hbeats_type *hbeats);
 
 /**
  * Change association of a cursor to a table (see body note)

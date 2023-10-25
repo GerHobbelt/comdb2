@@ -8087,24 +8087,14 @@ sqlite3BtreeCursor_remote(Btree *pBt,      /* The btree */
     }
 
     if (gbl_fdb_track) {
-        if (cur->fdbc->isuuid(cur)) {
-            uuidstr_t cus, tus;
-            unsigned char *pStr = (unsigned char *)cur->fdbc->id(cur);
-            logmsg(LOGMSG_USER,
-                   "%s Created cursor cid=%s with tid=%s rootp=%d "
-                   "db:tbl=\"%s:%s\"\n",
-                   __func__, (pStr) ? comdb2uuidstr(pStr, cus) : "UNK",
-                   comdb2uuidstr(tid, tus), iTable, pBt->zFilename,
-                   cur->fdbc->name(cur));
-        } else {
-            uuidstr_t tus;
-            unsigned long long *pLng = (unsigned long long *)cur->fdbc->id(cur);
-            logmsg(LOGMSG_USER,
-                   "%s Created cursor cid=%llx with tid=%s rootp=%d "
-                   "db:tbl=\"%s:%s\"\n",
-                   __func__, (pLng) ? *pLng : -1LL, comdb2uuidstr(tid, tus),
-                   iTable, pBt->zFilename, cur->fdbc->name(cur));
-        }
+        uuidstr_t cus, tus;
+        unsigned char *pStr = (unsigned char *)cur->fdbc->id(cur);
+        logmsg(LOGMSG_USER,
+               "%s Created cursor cid=%s with tid=%s rootp=%d "
+               "db:tbl=\"%s:%s\"\n",
+               __func__, (pStr) ? comdb2uuidstr(pStr, cus) : "UNK",
+               comdb2uuidstr(tid, tus), iTable, pBt->zFilename,
+               cur->fdbc->name(cur));
     }
 
     if (trans)
@@ -12476,11 +12466,11 @@ void bind_verify_indexes_query(sqlite3_stmt *stmt, void *sm)
 ** The hard copy will be converted to ondisk format in mem_to_ondisk in
 ** function indexes_expressions_data.
 */
-int verify_indexes_column_value(sqlite3_stmt *stmt, void *sm)
+int verify_indexes_column_value(struct sqlclntstate *clnt, sqlite3_stmt *stmt, void *sm)
 {
     struct schema_mem *psm = (struct schema_mem *)sm;
     Mem *pTo = psm->mout;
-    Mem *pFrom = sqlite3_column_value(stmt, 0);
+    Mem *pFrom = column_value(clnt, stmt, 0);
     if (pTo) {
         memcpy(pTo, pFrom, MEMCELLSIZE);
         pTo->db = NULL;
