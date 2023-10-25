@@ -1320,6 +1320,18 @@ REGISTER_TUNABLE("debug.txn_sleep",
                  "Sleep during a transaction to test transaction state systable", TUNABLE_INTEGER,
                  &gbl_debug_txn_sleep, INTERNAL, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("debug.print_query_plans",
+                 "Print query plan hash table every time after running a query. (Default: 0)", TUNABLE_BOOLEAN,
+                 &gbl_debug_print_query_plans, INTERNAL, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE(
+    "query_plan_percentage",
+    "Alarm if the average cost per row of current query plan is n percent above the cost for different query plan."
+    " (Default: 50)",
+    TUNABLE_DOUBLE, &gbl_query_plan_percentage, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("max_plan_query_plans",
+                 "Maximum number of plans to be placed into the query plan "
+                 "hash for each fingerprint (Default: 20)",
+                 TUNABLE_INTEGER, &gbl_query_plan_max_plans, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("bdboslog", NULL, TUNABLE_INTEGER, &gbl_namemangle_loglevel,
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("deadlock_rep_retry_max", NULL, TUNABLE_INTEGER,
@@ -1413,6 +1425,10 @@ REGISTER_TUNABLE("rep_verify_will_recover_trace",
 REGISTER_TUNABLE("max_wr_rows_per_txn",
                  "Set the max written rows per transaction.", TUNABLE_INTEGER,
                  &gbl_max_wr_rows_per_txn, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("written_rows_warn",
+                 "Set warning threshold for rows written in a transaction.  "
+                 "(Default: 0)",
+                 TUNABLE_INTEGER, &gbl_written_rows_warn, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("max_cascaded_rows_per_txn",
                  "Set the max cascaded rows updated per transaction.", TUNABLE_INTEGER,
                  &gbl_max_cascaded_rows_per_txn, 0, NULL, NULL, NULL, NULL);
@@ -2206,7 +2222,7 @@ REGISTER_TUNABLE("sockbplog_sockpool",
                  &gbl_sockbplog_sockpool, READONLY | NOARG, NULL, NULL, NULL,
                  NULL);
 
-REGISTER_TUNABLE("replicant_retry_on_not_durable", "Replicant retries non-durable writes.  (Default: on)",
+REGISTER_TUNABLE("replicant_retry_on_not_durable", "Replicant retries non-durable writes.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_replicant_retry_on_not_durable, 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE(
@@ -2292,4 +2308,8 @@ REGISTER_TUNABLE("dump_history_on_too_many_verify_errors",
 REGISTER_TUNABLE("warn_on_equiv_type_mismatch", "Warn about mismatch of different but equivalent data types "
                  "returned by different sqlite versions (Default off)", TUNABLE_BOOLEAN,
                  &gbl_warn_on_equiv_type_mismatch, NOARG | EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("seekscan_maxsteps",
+                 "Overrides the max number of steps for a seekscan optimization", TUNABLE_INTEGER,
+                 &gbl_seekscan_maxsteps, SIGNED, NULL, NULL, NULL,
+                 NULL);
 #endif /* _DB_TUNABLES_H */

@@ -1208,10 +1208,16 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
     int64_t time;
     int64_t prepTime;
     int64_t rows;
+    int is_lua;
+
+    if (1 || clnt->query_stats == NULL) {
+        record_query_cost(thd, clnt);
+        reqlog_set_path(logger, clnt->query_stats);
+    }
 
     if (gbl_fingerprint_queries) {
         if (h->sql_ref) {
-            if (is_stored_proc_sql(string_ref_cstr(h->sql_ref))) {
+            if ((is_lua = is_stored_proc_sql(string_ref_cstr(h->sql_ref)))) {
                 cost = clnt->spcost.cost;
                 time = clnt->spcost.time;
                 prepTime = clnt->spcost.prepTime;
@@ -1223,14 +1229,13 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
                 rows = clnt->nrows;
             }
             if (clnt->work.zOrigNormSql) { /* NOTE: Not subject to prepare. */
-                add_fingerprint(clnt, stmt, string_ref_cstr(h->sql_ref), clnt->work.zOrigNormSql,
-                                cost, time, prepTime, rows, logger,
-                                fingerprint);
+                add_fingerprint(clnt, stmt, string_ref_cstr(h->sql_ref), clnt->work.zOrigNormSql, cost, time, prepTime,
+                                rows, logger, fingerprint, is_lua);
                 have_fingerprint = 1;
             } else if (clnt->work.zNormSql &&
                        sqlite3_is_success(clnt->prep_rc)) {
-                add_fingerprint(clnt, stmt, string_ref_cstr(h->sql_ref), clnt->work.zNormSql, cost,
-                                time, prepTime, rows, logger, fingerprint);
+                add_fingerprint(clnt, stmt, string_ref_cstr(h->sql_ref), clnt->work.zNormSql, cost, time, prepTime,
+                                rows, logger, fingerprint, is_lua);
                 have_fingerprint = 1;
             } else {
                 reqlog_reset_fingerprint(logger, FINGERPRINTSZ);
@@ -1240,10 +1245,6 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
         }
     }
 
-    if (clnt->query_stats == NULL) {
-        record_query_cost(thd, clnt);
-        reqlog_set_path(logger, clnt->query_stats);
-    }
     reqlog_set_vreplays(logger, clnt->verify_retries);
 
     if (clnt->saved_rc)
@@ -1650,11 +1651,15 @@ int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                      enum trans_clntcomm sideeffects)
 {
     Pthread_mutex_lock(&clnt->wait_mutex);
-    /* if this is a new chunk, do not stop the hearbeats */
+    /* if this is a new chunk, do not stop the hearbeats.*/
     if (sideeffects != TRANS_CLNTCOMM_CHUNK)
         clnt->ready_for_heartbeats = 0;
 
-    reqlog_setup_begin_commit_rollback(thd, clnt);
+    if (sideeffects == TRANS_CLNTCOMM_NORMAL) {
+        /* for chunks and SPs (which implicitly call begin)
+           we don't want to set up reqlog again */
+        reqlog_setup_begin_commit_rollback(thd, clnt);
+    }
 
     /* this is a good "begin", just say "ok" */
     sql_set_sqlengine_state(clnt, __FILE__, __LINE__, SQLENG_STRT_STATE);
@@ -1676,7 +1681,10 @@ done:
     if (srs_tran_add_query(clnt))
         logmsg(LOGMSG_ERROR, "Fail to create a transaction replay session\n");
 
-    reqlog_end_request(thd->logger, -1, __func__, __LINE__);
+    if (sideeffects == TRANS_CLNTCOMM_NORMAL) {
+        /* for chunks and SPs, don't end the request */
+        reqlog_end_request(thd->logger, -1, __func__, __LINE__);
+    }
 
     return SQLITE_OK;
 }
@@ -2162,7 +2170,11 @@ int handle_sql_commitrollback(struct sqlthdstate *thd,
     int rc = 0;
     int outrc = 0;
 
-    reqlog_setup_begin_commit_rollback(thd, clnt);
+    if (sideeffects == TRANS_CLNTCOMM_NORMAL) {
+    /* Don't setup(reset) logger for commits of individual chunks,
+       and for the implicit commit from an SP */
+        reqlog_setup_begin_commit_rollback(thd, clnt);
+    }
 
     int64_t rows = clnt->log_effects.num_updated +
                    clnt->log_effects.num_deleted +
@@ -2319,9 +2331,13 @@ int handle_sql_commitrollback(struct sqlthdstate *thd,
 
 done:
     reset_clnt_flags(clnt);
-    reqlog_end_request(thd->logger, -1, __func__, __LINE__);
     if (clnt->osql.sock_started == 0)
         comdb2uuid_clear(clnt->osql.uuid);
+
+    if (sideeffects == TRANS_CLNTCOMM_NORMAL) {
+        /* end request only for non-chunk and non-SP transactions */
+        reqlog_end_request(thd->logger, -1, __func__, __LINE__);
+    }
 
     /* if this is a retry, let the upper layer free the structure */
     if (clnt->osql.replay == OSQL_RETRY_NONE) {
@@ -5217,6 +5233,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
 
     clnt->prepare_only = 0;
     clnt->is_readonly = 0;
+    clnt->is_readonly_set = 0;
     clnt->admin = 0;
 
     /* reset page-order. */

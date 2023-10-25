@@ -145,6 +145,7 @@ extern int gbl_verbose_send_coherency_lease;
 extern int gbl_reset_on_unelectable_cluster;
 extern int gbl_rep_verify_always_grab_writelock;
 extern int gbl_rep_verify_will_recover_trace;
+extern uint32_t gbl_written_rows_warn;
 extern uint32_t gbl_max_wr_rows_per_txn;
 extern uint32_t gbl_max_cascaded_rows_per_txn;
 extern uint32_t gbl_max_time_per_txn_ms;
@@ -258,6 +259,9 @@ extern int gbl_max_trigger_threads;
 extern int gbl_alternate_normalize;
 extern int gbl_sc_logbytes_per_second;
 extern int gbl_fingerprint_max_queries;
+extern int gbl_query_plan_max_plans;
+extern int gbl_debug_print_query_plans;
+extern double gbl_query_plan_percentage;
 extern int gbl_ufid_log;
 extern int gbl_ufid_add_on_collect;
 extern int gbl_collect_before_locking;
@@ -399,6 +403,7 @@ int gbl_file_permissions = 0660;
 
 extern int gbl_net_maxconn;
 extern int gbl_force_direct_io;
+extern int gbl_seekscan_maxsteps;
 
 /*
   =========================================================
