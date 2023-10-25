@@ -453,21 +453,14 @@ static void luabb_trigger_unregister(Lua L, dbconsumer_t *q)
         }
         Pthread_mutex_unlock(q->lock);
     }
-    int rc;
+    comdb2_sql_tick(); /* See comments in luabb_trigger_register(). */
     int retry = 10;
-    while (retry > 0) {
-        --retry;
-        rc = trigger_unregister_req(&q->info);
-        /* See comments in luabb_trigger_register(). */
-        comdb2_sql_tick();
-        if (rc == CDB2_TRIG_REQ_SUCCESS || rc == CDB2_TRIG_ASSIGNED_OTHER)
-            return;
-        if (L)
-            check_retry_conditions(L, &q->info, 1);
-        sleep(1);
-        /* See comments in luabb_trigger_register(). */
-        comdb2_sql_tick();
-    }
+    do {
+        int rc = trigger_unregister_req(&q->info);
+        if (rc == CDB2_TRIG_REQ_SUCCESS || rc == CDB2_TRIG_ASSIGNED_OTHER) return;
+        if (L) check_retry_conditions(L, &q->info, 1);
+    } while (--retry);
+    comdb2_sql_tick(); /* See comments in luabb_trigger_register(). */
 }
 
 static int stop_waiting(Lua L, dbconsumer_t *q)
@@ -774,14 +767,23 @@ static void dbconsumer_getargs(Lua L, dbconsumer_t *consumer)
             if (strcasecmp(key, "with_tid") == 0) {
                 if (luabb_type(L, -1) == DBTYPES_LBOOLEAN) {
                     consumer->push_tid = lua_toboolean(L, -1);
+                } else {
+                    luaL_error(L, "bad argument for 'with_tid'");
+                    return;
                 }
             } else if (strcasecmp(key, "with_sequence") == 0) {
                 if (luabb_type(L, -1) == DBTYPES_LBOOLEAN) {
                     consumer->push_seq = lua_toboolean(L, -1);
+                } else {
+                    luaL_error(L, "bad argument for 'with_sequence'");
+                    return;
                 }
             } else if (strcasecmp(key, "with_epoch") == 0) {
                 if (luabb_type(L, -1) == DBTYPES_LBOOLEAN) {
                     consumer->push_epoch = lua_toboolean(L, -1);
+                } else {
+                    luaL_error(L, "bad argument for 'with_epoch'");
+                    return;
                 }
             } else if (strcasecmp(key, "register_timeout") == 0) {
                 long long timeoutms = 0;
@@ -4987,6 +4989,7 @@ static const luaL_Reg consumer_funcs[] = {
     {"get_event_epoch", db_get_event_epoch},
     {"get_event_sequence", db_get_event_sequence},
     {"get_event_tid", db_get_event_tid},
+    {"spname", db_spname},
     {NULL, NULL}
 };
 
@@ -6569,6 +6572,7 @@ static uint8_t *push_trigger_field(Lua lua, char *oldnew, char *name,
         u.in.type = INTV_DS_TYPE;
         u.in.sign = ntohl(ds->sign);
         u.in.u.ds.days = ntohl(ds->days);
+        u.in.u.ds.hours = ntohl(ds->hours);
         u.in.u.ds.mins = ntohl(ds->mins);
         u.in.u.ds.sec = ntohl(ds->sec);
         u.in.u.ds.frac = ntohl(ds->msec);
@@ -6582,6 +6586,7 @@ static uint8_t *push_trigger_field(Lua lua, char *oldnew, char *name,
         u.in.type = INTV_DSUS_TYPE;
         u.in.sign = ntohl(dsus->sign);
         u.in.u.ds.days = ntohl(dsus->days);
+        u.in.u.ds.hours = ntohl(dsus->hours);
         u.in.u.ds.mins = ntohl(dsus->mins);
         u.in.u.ds.sec = ntohl(dsus->sec);
         u.in.u.ds.frac = ntohl(dsus->usec);
