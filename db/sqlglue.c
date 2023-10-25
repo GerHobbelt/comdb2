@@ -8017,6 +8017,7 @@ sqlite3BtreeCursor_remote(Btree *pBt,      /* The btree */
                           BtCursor *cur,   /* Write new cursor here */
                           struct sql_thread *thd)
 {
+    extern int gbl_ssl_allow_remsql;
     struct sqlclntstate *clnt = thd->clnt;
     fdb_tran_t *trans;
     fdb_t *fdb;
@@ -8067,7 +8068,7 @@ sqlite3BtreeCursor_remote(Btree *pBt,      /* The btree */
     if (trans)
         Pthread_mutex_lock(&clnt->dtran_mtx);
 
-    int usessl = clnt->plugin.has_ssl(clnt);
+    int usessl = clnt->plugin.has_ssl(clnt) && gbl_ssl_allow_remsql;
     cur->fdbc =
         fdb_cursor_open(clnt, cur, cur->rootpage, trans, &cur->ixnum, usessl);
     if (!cur->fdbc) {
@@ -11304,8 +11305,6 @@ sbuf:
         return NULL;
     }
 
-    logmsg(LOGMSG_INFO, "%s:%d connected to remote fd: %d\n", __func__, __LINE__, sbuf2fileno(sb));
-
     sbuf2settimeout(sb, IOTIMEOUTMS, IOTIMEOUTMS);
 
     return sb;
@@ -13194,4 +13193,3 @@ int comdb2_is_field_indexable(const char *table_name, int fld_idx) {
     }
     return 1;
 }
-

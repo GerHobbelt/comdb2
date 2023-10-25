@@ -374,6 +374,7 @@ uint32_t gbl_nsql;
 long long gbl_nsql_steps;
 
 uint32_t gbl_nnewsql;
+uint32_t gbl_nnewsql_ssl;
 long long gbl_nnewsql_steps;
 
 uint32_t gbl_masterrejects = 0;
@@ -1477,12 +1478,12 @@ void clean_exit_sigwrap(int signum) {
     clean_exit_thd(NULL);
 }
 
-static void free_sqlite_table(struct dbenv *dbenv)
+static void free_dbtables(struct dbenv *dbenv)
 {
     for (int i = dbenv->num_dbs - 1; i >= 0; i--) {
         dbtable *tbl = dbenv->dbs[i];
         delete_schema(tbl->tablename); // tags hash
-        delete_db(tbl->tablename);     // will free db
+        rem_dbtable_from_thedb_dbs(tbl);
         bdb_cleanup_fld_hints(tbl->handle);
         freedb(tbl);
     }
@@ -1528,7 +1529,7 @@ static void finish_clean()
     net_cleanup();
     cleanup_sqlite_master();
 
-    free_sqlite_table(thedb);
+    free_dbtables(thedb);
 
     if (thedb->sqlalias_hash) {
         hash_clear(thedb->sqlalias_hash);
@@ -1693,7 +1694,7 @@ void clean_exit(void)
     net_cleanup();
     cleanup_sqlite_master();
 
-    free_sqlite_table(thedb);
+    free_dbtables(thedb);
 
     if (thedb->sqlalias_hash) {
         hash_clear(thedb->sqlalias_hash);
@@ -5692,41 +5693,33 @@ int main(int argc, char **argv)
     return 0;
 }
 
-int add_db(dbtable *db)
+int add_dbtable_to_thedb_dbs(dbtable *table)
 {
     Pthread_rwlock_wrlock(&thedb_lock);
 
-    if (_db_hash_find(db->tablename) != 0) {
+    if (_db_hash_find(table->tablename) != 0) {
         Pthread_rwlock_unlock(&thedb_lock);
         return -1;
     }
 
     thedb->dbs = realloc(thedb->dbs, (thedb->num_dbs + 1) * sizeof(dbtable *));
-    db->dbs_idx = thedb->num_dbs;
-    thedb->dbs[thedb->num_dbs++] = db;
+    table->dbs_idx = thedb->num_dbs;
+    thedb->dbs[thedb->num_dbs++] = table;
 
     /* Add table to the hash. */
-    _db_hash_add(db);
+    _db_hash_add(table);
 
     Pthread_rwlock_unlock(&thedb_lock);
     return 0;
 }
 
-void delete_db(char *db_name)
+void rem_dbtable_from_thedb_dbs(dbtable *table)
 {
-    int idx;
-
     Pthread_rwlock_wrlock(&thedb_lock);
-    if ((idx = getdbidxbyname_ll(db_name)) < 0) {
-        logmsg(LOGMSG_FATAL, "%s: failed to find tbl for deletion: %s\n", __func__,
-                db_name);
-        exit(1);
-    }
-
     /* Remove the table from hash. */
-    _db_hash_del(thedb->dbs[idx]);
+    _db_hash_del(table);
 
-    for (int i = idx; i < (thedb->num_dbs - 1); i++) {
+    for (int i = table->dbs_idx; i < (thedb->num_dbs - 1); i++) {
         thedb->dbs[i] = thedb->dbs[i + 1];
         thedb->dbs[i]->dbs_idx = i;
     }
@@ -6130,7 +6123,7 @@ retry_tran:
         abort();
     }
 
-    free_sqlite_table(thedb);
+    free_dbtables(thedb);
     thedb->dbs = NULL;
 
     if (thedb->db_hash)
