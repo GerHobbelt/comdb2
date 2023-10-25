@@ -371,6 +371,7 @@ void clear_deferred_options(void)
 
 static char *legacy_options[] = {
     "allow_negative_column_size",
+    "berkattr elect_highest_committed_gen 0",
     "clean_exit_on_sigterm off",
     "create_default_user",
     "ddl_cascade_drop 0",
@@ -420,6 +421,7 @@ static char *legacy_options[] = {
     "setattr SC_DONE_SAME_TRAN 0",
     "sqlsortermaxmmapsize 268435456",
     "unnatural_types 1",
+    "wal_osync 1",
     "init_with_queue_ondisk_header off",
     "init_with_queue_compr off",
     "init_with_queue_persistent_sequence off",
