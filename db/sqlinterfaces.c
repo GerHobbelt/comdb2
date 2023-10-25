@@ -2928,7 +2928,7 @@ static void free_normalized_sql(
   }
 }
 
-static void free_original_normalized_sql(
+void free_original_normalized_sql(
   struct sqlclntstate *clnt
 ){
   if (clnt->work.zOrigNormSql) {
@@ -4423,6 +4423,15 @@ int done_cb_evbuffer(struct sqlclntstate *clnt)
 
 void signal_clnt_as_done(struct sqlclntstate *clnt)
 {
+    struct sql_thread *thd = (clnt->thd && clnt->thd->sqlthd) ? clnt->thd->sqlthd : NULL;
+
+    /* Clear the client from the sql thread, so that sql-dump won't see it. */
+    if (thd) {
+        Pthread_mutex_lock(&gbl_sql_lock);
+        thd->clnt = NULL;
+        Pthread_mutex_unlock(&gbl_sql_lock);
+    }
+
     if (clnt->done_cb) {
         clnt->done_cb(clnt); /* newsql_done_cb */
     } else {
@@ -4490,16 +4499,13 @@ static void sqlengine_work_lua_thread(void *thddata, void *work)
     debug_close_clnt(clnt);
     signal_clnt_as_done(clnt);
 
-    sql_reset_sqlthread(thd->sqlthd);
-
     thrman_setid(thrman_self(), "[done]");
 }
 
 int gbl_debug_sqlthd_failures;
 int gbl_enable_internal_sql_stmt_caching = 1;
 
-static int execute_verify_indexes(struct sqlthdstate *thd,
-                                  struct sqlclntstate *clnt)
+static int execute_verify_indexes(struct sqlthdstate *thd, struct sqlclntstate *clnt)
 {
     int rc;
     stmt_cache_entry_t *cached_entry = NULL;
@@ -4808,7 +4814,6 @@ void sqlengine_work_appsock(struct sqlthdstate *thd, struct sqlclntstate *clnt)
     clnt_change_state(clnt, CONNECTION_IDLE);
     debug_close_clnt(clnt);
     signal_clnt_as_done(clnt);
-    sql_reset_sqlthread(sqlthd);
 
     thrman_setid(thrman_self(), "[done]");
 }
@@ -5240,6 +5245,9 @@ void cleanup_clnt(struct sqlclntstate *clnt)
     Pthread_mutex_destroy(&clnt->sql_lk);
 }
 
+int gbl_unexpected_last_type_warn = 1;
+int gbl_unexpected_last_type_abort = 0;
+
 void reset_clnt(struct sqlclntstate *clnt, int initial)
 {
     if (initial) {
@@ -5259,6 +5267,13 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
        clnt->last_reset_time = comdb2_time_epoch();
        clnt_change_state(clnt, CONNECTION_RESET);
        clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
+       if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
+           if (gbl_unexpected_last_type_warn)
+               logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n",
+                      clnt->lastresptype, clnt->origin, clnt->argv0);
+           if (gbl_unexpected_last_type_abort)
+               abort();
+       }
     }
 
     clnt->pPool = NULL; /* REDUNDANT? */
@@ -6154,17 +6169,6 @@ void clnt_change_state(struct sqlclntstate *clnt, enum connection_state state) {
     Pthread_mutex_lock(&clnt->state_lk);
     clnt->state = state;
     Pthread_mutex_unlock(&clnt->state_lk);
-}
-
-/* we have to clear
-      - sqlclntstate (key, pointers in Bt, thd)
-      - thd->tran and mode (this is actually done in Commit/Rollback)
- */
-void sql_reset_sqlthread(struct sql_thread *thd)
-{
-    if (thd) {
-        thd->clnt = NULL;
-    }
 }
 
 /**

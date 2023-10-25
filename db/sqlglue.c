@@ -153,6 +153,7 @@ extern int gbl_notimeouts;
 extern int gbl_move_deadlk_max_attempt;
 extern int gbl_fdb_track;
 extern int gbl_selectv_rangechk;
+extern int gbl_enable_internal_sql_stmt_caching;
 
 unsigned long long gbl_sql_deadlock_reconstructions = 0;
 unsigned long long gbl_sql_deadlock_failures = 0;
@@ -9475,6 +9476,7 @@ void cancel_sql_statement_with_cnonce(const char *cnonce)
 void sql_dump_running_statements(void)
 {
     struct sql_thread *thd;
+    struct sqlclntstate *clnt;
     BtCursor *cur;
     struct tm tm;
     char rqid[50];
@@ -9486,24 +9488,24 @@ void sql_dump_running_statements(void)
         localtime_r((time_t *)&t, &tm);
         Pthread_mutex_lock(&thd->lk);
 
-        if (thd->clnt && thd->clnt->sql) {
-            if (thd->clnt->osql.rqid) {
+        if ((clnt = thd->clnt) != NULL && clnt->sql) {
+            if (clnt->osql.rqid) {
                 uuidstr_t us;
-                snprintf(rqid, sizeof(rqid), "txn %016llx %s",
-                         thd->clnt->osql.rqid,
-                         comdb2uuidstr(thd->clnt->osql.uuid, us));
+                snprintf(rqid, sizeof(rqid), "txn %016llx %s", clnt->osql.rqid, comdb2uuidstr(clnt->osql.uuid, us));
             } else
                 rqid[0] = 0;
 
-            logmsg(LOGMSG_USER, "id %d %02d/%02d/%02d %02d:%02d:%02d %s%s pid %d task %s ", thd->id,
-                   tm.tm_mon + 1, tm.tm_mday, 1900 + tm.tm_year, tm.tm_hour,
-                   tm.tm_min, tm.tm_sec, rqid, thd->clnt->origin, thd->clnt->conninfo.pid, thd->clnt->argv0 ? thd->clnt->argv0 : "???");
-            logmsg(LOGMSG_USER, "%s\n", thd->clnt->sql);
+            logmsg(LOGMSG_USER, "id %d %02d/%02d/%02d %02d:%02d:%02d %s%s pid %d task %s ", thd->id, tm.tm_mon + 1,
+                   tm.tm_mday, 1900 + tm.tm_year, tm.tm_hour, tm.tm_min, tm.tm_sec, rqid, clnt->origin,
+                   clnt->conninfo.pid, clnt->argv0 ? clnt->argv0 : "???");
+            if (clnt->osql.replay != OSQL_RETRY_NONE)
+                logmsg(LOGMSG_USER, "[replay] ");
+            logmsg(LOGMSG_USER, "%s\n", clnt->sql);
 
-            int nparams = thd->clnt->plugin.param_count(thd->clnt);
+            int nparams = clnt->plugin.param_count(clnt);
             char param[255];
             for (int i = 0; i < nparams; i++) {
-                char *value = param_string_value(thd->clnt, i, param, sizeof(param));
+                char *value = param_string_value(clnt, i, param, sizeof(param));
                 if (value)
                     logmsg(LOGMSG_USER, "    %s\n", value);
             }
@@ -11302,6 +11304,8 @@ sbuf:
         return NULL;
     }
 
+    logmsg(LOGMSG_INFO, "%s:%d connected to remote fd: %d\n", __func__, __LINE__, sbuf2fileno(sb));
+
     sbuf2settimeout(sb, IOTIMEOUTMS, IOTIMEOUTMS);
 
     return sb;
@@ -12506,7 +12510,8 @@ static int bind_stmt_mem(struct schema *sc, sqlite3_stmt *stmt, Mem *m)
 void bind_verify_indexes_query(sqlite3_stmt *stmt, void *sm)
 {
     struct schema_mem *psm = (struct schema_mem *)sm;
-    bind_stmt_mem(psm->sc, stmt, psm->min);
+    if (psm->sc)
+        bind_stmt_mem(psm->sc, stmt, psm->min);
 }
 
 /* verify_indexes_column_value
@@ -13189,3 +13194,4 @@ int comdb2_is_field_indexable(const char *table_name, int fld_idx) {
     }
     return 1;
 }
+
