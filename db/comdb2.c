@@ -814,6 +814,8 @@ extern void clear_sqlhist();
 
 int gbl_hostname_refresh_time = 60;
 
+int gbl_pstack_self = 1;
+
 int close_all_dbs_tran(tran_type *tran);
 
 int open_all_dbs_tran(void *tran);
@@ -1660,6 +1662,8 @@ void clean_exit(void)
 
     stop_threads(thedb);
     flush_db();
+    if (gbl_backend_opened)
+        llmeta_dump_mapping(thedb);
 
 #   if 0
     /* TODO: (NC) Instead of sleep(), maintain a counter of threads and wait for
