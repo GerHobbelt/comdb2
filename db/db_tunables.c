@@ -384,6 +384,8 @@ extern int gbl_scwaittime;
 extern int gbl_reorder_idx_writes;
 extern int gbl_perform_full_clean_exit;
 extern int gbl_clean_exit_on_sigterm;
+extern int gbl_stack_string_refs;
+extern int gbl_abort_on_dangling_stringrefs;
 extern int gbl_debug_omit_dta_write;
 extern int gbl_debug_omit_idx_write;
 extern int gbl_debug_omit_blob_write;
@@ -435,6 +437,7 @@ extern int gbl_physrep_max_pending_replicants;
 extern int gbl_physrep_reconnect_penalty;
 extern int gbl_physrep_register_interval;
 extern int gbl_physrep_shuffle_host_list;
+extern int gbl_physrep_ignore_queues;
 
 extern char *gbl_physrep_source_dbname;
 extern char *gbl_physrep_source_host;
@@ -480,6 +483,7 @@ extern int gbl_timer_warn_interval;
 int gbl_incoherent_clnt_wait = 10;
 int gbl_new_leader_duration = 3;
 extern int gbl_transaction_grace_period;
+extern int gbl_dohsql_joins;
 
 /*
   =========================================================

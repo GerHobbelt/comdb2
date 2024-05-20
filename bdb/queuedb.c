@@ -1380,25 +1380,25 @@ const struct bdb_queue_stats *bdb_queuedb_get_stats(bdb_state_type *bdb_state)
 }
 
 int bdb_trigger_subscribe(bdb_state_type *bdb_state, pthread_cond_t **cond,
-                          pthread_mutex_t **lock, const uint8_t **status)
+                          pthread_mutex_t **lock, const uint8_t **status, struct __db_trigger_subscription **hndl)
 {
     DB_ENV *dbenv = bdb_state->dbenv;
-    return dbenv->trigger_subscribe(dbenv, bdb_state->name, cond, lock, status);
+    return dbenv->trigger_subscribe(dbenv, bdb_state->name, cond, lock, status, hndl);
 }
 
-int bdb_trigger_unsubscribe(bdb_state_type *bdb_state)
+int bdb_trigger_unsubscribe(bdb_state_type *bdb_state, struct __db_trigger_subscription *t)
 {
     DB_ENV *dbenv = bdb_state->dbenv;
-    return dbenv->trigger_unsubscribe(dbenv, bdb_state->name);
+    return dbenv->trigger_unsubscribe(dbenv, t);
 }
 
-int bdb_trigger_lock(bdb_state_type *bdb_state, const uint8_t **status, void **retp)
+int bdb_trigger_lock(bdb_state_type *bdb_state, const uint8_t **status, struct __db_trigger_subscription **retp)
 {
     DB_ENV *dbenv = bdb_state->dbenv;
     return dbenv->trigger_lock(dbenv, bdb_state->name, status, retp);
 }
 
-int bdb_trigger_unlock(bdb_state_type *bdb_state, void *ret)
+int bdb_trigger_unlock(bdb_state_type *bdb_state, struct __db_trigger_subscription *ret)
 {
     DB_ENV *dbenv = bdb_state->dbenv;
     return dbenv->trigger_unlock(dbenv, ret);

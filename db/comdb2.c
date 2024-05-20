@@ -170,6 +170,7 @@ int gbl_trace_prepare_errors = 0;
 int gbl_trigger_timepart = 0;
 int gbl_extended_sql_debug_trace = 0;
 int gbl_perform_full_clean_exit = 1;
+int gbl_abort_on_dangling_stringrefs = 0;
 struct ruleset *gbl_ruleset = NULL;
 
 void myctrace(const char *c) { ctrace("%s", c); }
@@ -1211,7 +1212,7 @@ static void *purge_old_blkseq_thread(void *arg)
             }
         }
 
-        if (gbl_private_blkseq) {
+        if (gbl_private_blkseq && !gbl_is_physical_replicant) {
             thrman_where(thr_self, "clean_blkseq");
             int nstripes;
 
@@ -1228,11 +1229,13 @@ static void *purge_old_blkseq_thread(void *arg)
         }
 
         /* queue consumer thread admin */
-        thrman_where(thr_self, "dbqueue_admin");
-        rdlock_schema_lk();
-        dbqueuedb_admin(dbenv);
-        unlock_schema_lk();
-        thrman_where(thr_self, NULL);
+        if (!gbl_is_physical_replicant) {
+            thrman_where(thr_self, "dbqueue_admin");
+            rdlock_schema_lk();
+            dbqueuedb_admin(dbenv);
+            unlock_schema_lk();
+            thrman_where(thr_self, NULL);
+        }
 
         /* purge old blobs.  i didn't want to make a whole new thread just
          * for this -- SJ */
@@ -1242,12 +1245,6 @@ static void *purge_old_blkseq_thread(void *arg)
 
         /* update per node stats */
         process_nodestats();
-
-        /* Claim is this is not needed in the new incoherency scheme
-         * if I am not coherent, make sure the master hasn't forgotten about me
-        if(!bdb_am_i_coherent(dbenv->bdb_env))
-            send_forgetmenot();
-         */
 
         if ((loop % 30) == 0 && gbl_verify_dbreg)
             bdb_verify_dbreg(dbenv->bdb_env);
@@ -1405,21 +1402,45 @@ static int clear_csc2_files(void)
     return 0;
 }
 
-/* gets called single threaded during startup to initialize */
+/* gets called single threaded from init() during startup to initialize.
+   subsequent calls are thread-safe. */
 char *comdb2_get_tmp_dir(void)
 {
-    static char path[256];
+    static char path[PATH_MAX];
     static int once = 0;
+
+    if (debug_switch_get_tmp_dir_sleep()) {
+        once = 0;
+    }
 
     if (!once) {
         bzero(path, sizeof(path));
 
+        if (debug_switch_get_tmp_dir_sleep()) {
+            /* The line below partially copies the file path. The sorter will not
+               be able to use the incomplete path */
+            snprintf(path, PATH_MAX, "%s/t", thedb->basedir);
+            logmsg(LOGMSG_WARN, "partially copied path. waiting to copy full path\n");
+            sleep(5);
+            logmsg(LOGMSG_WARN, "copying full path\n");
+        }
+
         if (gbl_nonames)
-            snprintf(path, 256, "%s/tmp", thedb->basedir);
+            snprintf(path, PATH_MAX, "%s/tmp", thedb->basedir);
         else
-            snprintf(path, 256, "%s/%s.tmpdbs", thedb->basedir, thedb->envname);
+            snprintf(path, PATH_MAX, "%s/%s.tmpdbs", thedb->basedir, thedb->envname);
+
+        once = 1;
     }
 
+    while (debug_switch_get_tmp_dir_sleep() && path[strlen(path) - 1] != 't') {
+        logmsg(LOGMSG_WARN, "waiting for the other query to partially copy the path\n");
+        sleep(1);
+    }
+
+    if (debug_switch_get_tmp_dir_sleep()) {
+        debug_switch_set_tmp_dir_sleep(0);
+    }
     return path;
 }
 
@@ -1723,7 +1744,7 @@ void clean_exit(void)
     free_tzdir();
     tz_hash_free();
     clear_sqlhist();
-    if(!all_string_references_cleared())
+    if (!all_string_references_cleared() && gbl_abort_on_dangling_stringrefs)
         abort();
 
     logmsg(LOGMSG_USER, "goodbye\n");
@@ -1809,6 +1830,7 @@ void cleanup_newdb(dbtable *tbl)
         free(tbl->ixuse);
         tbl->ixuse = NULL;
     }
+
     if (tbl->sqlixuse) {
         free(tbl->sqlixuse);
         tbl->sqlixuse = NULL;

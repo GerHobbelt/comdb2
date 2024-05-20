@@ -6440,8 +6440,16 @@ int sqlite3BtreeCloseCursor(BtCursor *pCur)
     /* update cursor use counts.  don't lock for now.
      * analyze shouldnt' affect cursor stats */
     if (pCur->db && !clnt->is_analyze) {
-        if (pCur->ixnum != -1)
+        if (pCur->ixnum != -1) {
             pCur->db->sqlixuse[pCur->ixnum] += (pCur->nfind + pCur->nmove);
+            pCur->db->index_used_count++;
+        } else {
+            pCur->db->read_count += (pCur->nfind + pCur->nmove);
+
+            if (pCur->nfind && pCur->nmove) {
+                pCur->db->read_count -= 1;  // double-counts if an index was used 
+            }
+        }
     }
 
     if (thd && thd->query_hash) {
@@ -9294,28 +9302,8 @@ int sqlite3BtreeSyncDisabled(Btree *pBt) { return 0; }
  */
 void *sqlite3BtreeSchema(Btree *pBt, int nBytes, void (*xFree)(void *))
 {
-    if (!pBt->is_remote) {
-        pBt->schema = calloc(1, nBytes);
-        pBt->free_schema = xFree;
-    } else {
-        /* I will cache the schema-s for foreign dbs. Let this be the first
-         * step to share the schema for all database connections */
-        pBt->schema = fdb_sqlite_get_schema(pBt, nBytes);
-
-        /* We ignore Xfree since this is shared and not part of a sqlite engine
-         * space.
-         *
-         * However, if query_preparer plugin is loaded/enabled, as we do not
-         * cache its db (sqlitex) handle. Thus, we will have to set free_schema
-         * to avoid memory leaks. */
-        struct sql_thread *thd = pthread_getspecific(query_info_key);
-        if (gbl_old_column_names && thd && thd->clnt && thd->clnt->thd &&
-            thd->clnt->thd->query_preparer_running) {
-            assert(query_preparer_plugin);
-            /* sqlitex */
-            pBt->free_schema = xFree;
-        }
-    }
+    pBt->schema = calloc(1, nBytes);
+    pBt->free_schema = xFree;
     return pBt->schema;
 }
 

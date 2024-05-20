@@ -2801,12 +2801,12 @@ struct __db_env {
     int (*wrlock_recovery_blocked)(DB_ENV *);
 	int (*lock_recovery_lock)(DB_ENV *, const char *func, int line);
 	int (*unlock_recovery_lock)(DB_ENV *, const char *func, int line);
+
 	/* Trigger/consumer signalling support */
-	int(*trigger_subscribe) __P((DB_ENV *, const char *, pthread_cond_t **,
-					 pthread_mutex_t **, const uint8_t **));
-	int(*trigger_unsubscribe) __P((DB_ENV *, const char *));
-	int(*trigger_lock) __P((DB_ENV *, const char *, const uint8_t **, void **));
-	int(*trigger_unlock) __P((DB_ENV *, void *));
+	int(*trigger_subscribe) __P((DB_ENV *, const char *, pthread_cond_t **, pthread_mutex_t **, const uint8_t **, struct __db_trigger_subscription **));
+	int(*trigger_unsubscribe) __P((DB_ENV *, struct __db_trigger_subscription *));
+	int(*trigger_lock) __P((DB_ENV *, const char *, const uint8_t **, struct __db_trigger_subscription **));
+	int(*trigger_unlock) __P((DB_ENV *, struct __db_trigger_subscription *));
 	int(*trigger_open) __P((DB_ENV *, const char *));
 	int(*trigger_close) __P((DB_ENV *, const char *));
 	int(*trigger_ispaused) __P((DB_ENV *, const char *));

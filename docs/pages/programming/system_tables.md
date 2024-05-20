@@ -463,9 +463,52 @@ Table of permissions for system tables in the database.
 * `WRITE` - `Y` if `username` has write access to `tablename`
 * `DDL` - `Y` if `username` can modify `tablename` schema
 
+## comdb2_tables
+
+List of all tables in the database
+
+    comdb2_tables(tablename)
+
+* `tablename` - Name of the table
+
+## comdb2_tablepermissions
+
+Permissions for tables in the database
+
+    comdb2_tablepermissions(tablename, username, READ, WRITE, DDL)
+
+* `tablename` - Name of the table
+* `username` - Name of the user
+* `READ` - `Y` if `username` has read access to `tablename`
+* `WRITE` - `Y` if `username` has write access to `tablename`
+* `DDL` - `Y` if `username` can modify `tablename` schema
+
+## comdb2_tablesizes
+
+Sizes on disk of tables in the database
+
+    comdb2_tablesizes(tablename, bytes)
+
+* `tablename` - Name of the table
+* `bytes` - Size of the table in bytes
+
+## comdb2_table_metrics
+
+Lists real-time metrics for tables in the database
+
+    comdb2_table_metrics(tablename)
+
+* `table_name` - Name of the table
+* `num_queries` - Number of queries ran on the table
+* `num_index_used` - Number of times a table index was used
+* `num_records_read` - Number of data records read
+* `num_records_inserted` - Number of data records inserted
+* `num_records_updated` - Number of data records updated
+* `num_records_deleted` - Number of data records deleted
+
 ## comdb2_table_properties
 
-This table lists miscellaneous table properties
+Lists miscellaneous table properties
 
     comdb2_table_properties(table_name, odh, compress, blob_compress, 
     in_place_updates, instant_schema_change)
@@ -477,34 +520,61 @@ This table lists miscellaneous table properties
 * `in_place_updates` - `Y` if in-place updates are enabled
 * `instant_schema_change` - `Y` if instant schema change is enabled
 
-## comdb2_tablepermissions
+## comdb2_tag_columns
 
-Table of permissions for tables in the database.
+Shows the columns for each schema tag
 
-    comdb2_tablepermissions(tablename, username, READ, WRITE, DDL)
-
-* `tablename` - Name of the table
-* `username` - Name of the user
-* `READ` - `Y` if `username` has read access to `tablename`
-* `WRITE` - `Y` if `username` has write access to `tablename`
-* `DDL` - `Y` if `username` can modify `tablename` schema
-
-## comdb2_tables
-
-This is a table of all the existing tables in the database.
-
-    comdb2_tables(tablename)
+    comdb2_tag_columns(tablename, tagname, name, indx, type, offset,
+                       length, datalength, flags, expr, defaultvalue,
+                       dbload, conversionflags, conversiondbpad,
+                       conversionstep, blobindx)
 
 * `tablename` - Name of the table
+* `tagname` - Name of the tag
+* `name` - Name of the column
+* `indx` - Index of the column in the tag
+* `type` - Type of the column
+* `offset` - Offset of the column in the tag
+* `length` - Bytes length of the column in the tag
+* `datalength` - For dyntags, length of the client supplied buffer
+* `flags` - Flags for column
+             INDEX_DESCENT = 1 set for index members, to reverse order
+             NO_NULL = 2 do not allow nulls
+* `expr` - Set if the column is an expression
+* `defaultvalue` - Dbstore default value for a column
+* `dbload` - Dbload value for a column
+* `conversionflags` - Flags the alter the conversion
+             FLD_CONV_DBPAD - special byte array handling
+             FLD_CONV_TZONE - timezone is specifed 
+             FLD_CONV_LENDIAN - column is little endian
+             FLD_CONV_TRUNCATE - special handling for out of range strings
+* `conversiondbpad` -  For byte arrays.
+             Converting from - if the destination is smaller,
+             the lost bytes must match dbpad or it is a conversion failure.
+             Converting to - if the destination is larger then the spare bytes
+             will be padded with dbpad.  If dbapd==-1 then the source and
+             destination must match.
+* `conversionstep` - Applies to out of range strings
+             0 for truncate only
+             1 for truncate and increment
+* `blobindex` - If the column is a blob, its index, otherwise -1
 
-## comdb2_tablesizes
+## comdb2_tags
 
-Shows the sizes on disk of the tables.
+Shows the schema tags for tables
 
-    comdb2_tablesizes(tablename, bytes)
+    comdb2_tags(tablename, tagname, ixnum, size, columns, sqlitetag, csctag,
+                numblobs, numindexes)
 
 * `tablename` - Name of the table
-* `bytes` - Size of the table in bytes
+* `tagname` - Name of the tag
+* `ixnum` - If this is a schema index, its index in the list of indexes
+* `size` - Length of the index (recsize)
+* `numcolumns` - Number of columns in the tag
+* `sqlitekeyname` - If this is a schema index, the name that sqlite uses for it
+* `keyname` - If this is an index, name of the index
+* `numblobs` - Number of blob columns in the tag
+* `numndexes` - If this is a table tag schema, how many indexes
 
 ## comdb2_temporary_file_sizes
 
@@ -763,3 +833,14 @@ Generic stack collection
 * `hits` - number of times this stack has been collected.
 * `stack` - flattened stack.
 
+## comdb2_stringrefs
+
+Active string references
+
+   comdb2_stringrefs(string, func, line, refcnt, stack)
+
+* `string` - stringref string value.
+* `func` - function which allocated the string.
+* `line` - line number which allocates the string.
+* `refcnt` - number of active references.
+* `stack` - stack which allocated string.

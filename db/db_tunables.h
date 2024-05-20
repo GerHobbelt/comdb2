@@ -1913,6 +1913,8 @@ REGISTER_TUNABLE("physrep_source_dbname", "Physical replication source cluster d
 REGISTER_TUNABLE("physrep_source_host", "List of physical replication source cluster hosts.",
                  TUNABLE_STRING, &gbl_physrep_source_host, READONLY, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("physrep_ignore_queues", "Don't replicate queues.", TUNABLE_BOOLEAN, &gbl_physrep_ignore_queues,
+                 READONLY, NULL, NULL, NULL, NULL);
 
 /* reversql-sql */
 REGISTER_TUNABLE("revsql_allow_command_execution",
@@ -2042,24 +2044,23 @@ REGISTER_TUNABLE("selectv_writelock",
                  TUNABLE_BOOLEAN, &gbl_selectv_writelock,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE("perform_full_clean_exit",
-                 "Perform full clean exit on exit signal (Default: on)",
-                 TUNABLE_BOOLEAN, &gbl_perform_full_clean_exit,
-                 NOARG, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("perform_full_clean_exit", "Perform full clean exit on exit signal.  (Default: on)", TUNABLE_BOOLEAN,
+                 &gbl_perform_full_clean_exit, NOARG, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("clean_exit_on_sigterm", "Attempt to do orderly shutdown on SIGTERM.  (Default: on)", TUNABLE_BOOLEAN,
+                 &gbl_clean_exit_on_sigterm, NOARG, NULL, NULL, update_clean_exit_on_sigterm, NULL);
 
-REGISTER_TUNABLE("clean_exit_on_sigterm",
-                 "Attempt to do orderly shutdown on SIGTERM (Default: on)",
-                 TUNABLE_BOOLEAN, &gbl_clean_exit_on_sigterm,
-                 NOARG, NULL, NULL, update_clean_exit_on_sigterm, NULL);
+REGISTER_TUNABLE("stack_string_refs", "Acquire a cheapstack for every string-ref.  (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_stack_string_refs, 0, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE("msgwaittime",
-                 "Network timeout for pushnext & queue changes.  (Default: 10000)",
-                 TUNABLE_INTEGER, &gbl_msgwaittime, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("abort_on_dangling_string_refs", "Abort-on-exit on dangling stringrefs.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_abort_on_dangling_stringrefs, 0, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE("scwaittime",
-                 "Network timeout for schema changes.  (Default: 1000)",
-                 TUNABLE_INTEGER, &gbl_scwaittime, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("msgwaittime", "Network timeout for pushnext & queue changes.  (Default: 10000)", TUNABLE_INTEGER,
+                 &gbl_msgwaittime, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("scwaittime", "Network timeout for schema changes.  (Default: 1000)", TUNABLE_INTEGER, &gbl_scwaittime,
+                 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("debug_children_lock",
                  "Stacktrace when database acquires or releases children lock."
@@ -2490,5 +2491,8 @@ REGISTER_TUNABLE("transaction_grace_period",
                  "Time to wait for connections with pending transactions to go away on exit. (Default: 60)",
                  TUNABLE_INTEGER, &gbl_transaction_grace_period, 0, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("dohsql_joins",
+                 "Enable to support joins in parallel sql execution (default: on)",
+                 TUNABLE_BOOLEAN, &gbl_dohsql_joins, 0, NULL, NULL, NULL, NULL);
 
 #endif /* _DB_TUNABLES_H */

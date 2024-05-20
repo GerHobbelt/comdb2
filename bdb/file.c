@@ -2428,7 +2428,7 @@ static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
     rc = dbenv->set_paniccall(dbenv, panic_func);
 
     extern int gbl_is_physical_replicant;
-    if (gbl_is_physical_replicant && physrep_ignore_table_count() > 0) {
+    if (gbl_is_physical_replicant) {
         rc = dbenv->set_rep_ignore(dbenv, physrep_ignore_btree);
     }
 
@@ -3960,8 +3960,8 @@ low_headroom:
                         ctrace("deleting log %s %d\n", logname, filenum);
                     }
 
-                    rc = unlink(logname);
                     __log_invalidate(filenum);
+                    rc = unlink(logname);
                     if (rc) {
                         logmsg(LOGMSG_ERROR,
                                "delete_log_files: unlink for <%s> returned %d %d\n",

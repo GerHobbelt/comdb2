@@ -118,6 +118,10 @@ int comdb2SystblInit(
   if (rc == SQLITE_OK)
     rc = systblColumnsInit(db);
   if (rc == SQLITE_OK)
+    rc = systblTagsInit(db);
+  if (rc == SQLITE_OK)
+    rc = systblTagColumnsInit(db);
+  if (rc == SQLITE_OK)
     rc = systblKeysInit(db);
   if (rc == SQLITE_OK)
     rc = systblKeyComponentsInit(db);
@@ -230,6 +234,8 @@ int comdb2SystblInit(
     rc = systblTriggersInit(db);
   if (rc == SQLITE_OK)  
     rc = systblStacks(db);
+  if (rc == SQLITE_OK)
+    rc = systblStringRefsInit(db);
 #ifdef INCLUDE_DEBUG_ONLY_SYSTABLES
   if (rc == SQLITE_OK)
     rc = systblTranCommitInit(db);
@@ -238,6 +244,8 @@ int comdb2SystblInit(
     rc = systblPreparedInit(db);
   if (rc == SQLITE_OK)
     rc = systblSchemaVersionsInit(db);
+  if (rc == SQLITE_OK)
+    rc = systblTableMetricsInit(db);
 #endif
   return rc;
 }
