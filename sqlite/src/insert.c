@@ -636,9 +636,22 @@ void sqlite3Insert(
   v = sqlite3GetVdbe(pParse);
   if( v==0 ) goto insert_cleanup;
 #if defined(SQLITE_BUILDING_FOR_COMDB2)
+  /* Set up necessary flag bits to be sent to the master node */
   if ((onError != OE_None && onError != OE_Default) || pUpsert) {
-    if( onError==OE_Ignore ) comdb2SetIgnore(v);
-    else if( onError==OE_Replace ) comdb2SetReplace(v);
+    if( onError==OE_Ignore ){       /* INSERT OR IGNORE ... */
+      comdb2SetIgnore(v);
+    }
+
+    if( onError==OE_Replace ){      /* REPLACE INTO ... */
+      comdb2SetReplace(v);
+    }
+    if( pUpsert ){
+      if( pUpsert->pUpsertSet==0 ){ /* INSERT .. ON CONFLICT(..) DO NOTHING */
+        comdb2SetIgnore(v);
+      }else{                        /* INSERT .. ON CONFLICT(..) DO UPDATE .. */
+        comdb2SetUpdate(v);
+      }
+    }
   }
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
   if( pParse->nested==0 ) sqlite3VdbeCountChanges(v);
@@ -832,7 +845,7 @@ void sqlite3Insert(
     sqlite3ErrorMsg(pParse, "%d values for %d columns", nColumn, pColumn->nId);
     goto insert_cleanup;
   }
-    
+
   /* Initialize the count of rows to be inserted
   */
   if( (db->flags & SQLITE_CountRows)!=0
@@ -891,17 +904,11 @@ void sqlite3Insert(
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
     }
 #if defined(SQLITE_BUILDING_FOR_COMDB2)
-    if( pUpsert->pUpsertSet ){
-      comdb2SetUpdate(v);
-    }else{
-      comdb2SetIgnore(v);
-    }
   }else if( onError==OE_Ignore || onError==OE_Replace ){
     comdb2SetUpsertIdx(v, MAXINDEX+1);
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
   }
 #endif
-
 
   /* This is the top of the main insertion loop */
   if( useTempTable ){
@@ -1367,9 +1374,13 @@ void sqlite3GenerateConstraintChecks(
   sqlite3 *db;         /* Database connection */
   int i;               /* loop counter */
   int ix;              /* Index loop counter */
+#if !defined(SQLITE_BUILDING_FOR_COMDB2)
   int nCol;            /* Number of columns */
+#endif /* !defined(SQLITE_BUILDING_FOR_COMDB2) */
   int onError;         /* Conflict resolution strategy */
+#if !defined(SQLITE_BUILDING_FOR_COMDB2)
   int addr1;           /* Address of jump instruction */
+#endif /* !defined(SQLITE_BUILDING_FOR_COMDB2) */
   int seenReplace = 0; /* True if REPLACE is used to resolve INT PK conflict */
   int nPkField;        /* Number of fields in PRIMARY KEY. 1 for ROWID tables */
   Index *pUpIdx = 0;   /* Index to which to apply the upsert */
@@ -1391,8 +1402,10 @@ void sqlite3GenerateConstraintChecks(
   v = sqlite3GetVdbe(pParse);
   assert( v!=0 );
   assert( pTab->pSelect==0 );  /* This table is not a VIEW */
+#if !defined(SQLITE_BUILDING_FOR_COMDB2)
   nCol = pTab->nCol;
-  
+#endif /* !defined(SQLITE_BUILDING_FOR_COMDB2) */
+
   /* pPk is the PRIMARY KEY index for WITHOUT ROWID tables and NULL for
   ** normal rowid tables.  nPkField is the number of key fields in the 
   ** pPk index or 1 for a rowid table.  In other words, nPkField is the
@@ -1409,6 +1422,7 @@ void sqlite3GenerateConstraintChecks(
   VdbeModuleComment((v, "BEGIN: GenCnstCks(%d,%d,%d,%d,%d)",
                      iDataCur, iIdxCur, regNewData, regOldData, pkChng));
 
+#if !defined(SQLITE_BUILDING_FOR_COMDB2)
   /* Test all NOT NULL constraints.
   */
   for(i=0; i<nCol; i++){
@@ -1504,6 +1518,7 @@ void sqlite3GenerateConstraintChecks(
     pParse->iSelfTab = 0;
   }
 #endif /* !defined(SQLITE_OMIT_CHECK) */
+#endif /* !defined(SQLITE_BUILDING_FOR_COMDB2) */
 
   /* UNIQUE and PRIMARY KEY constraints should be handled in the following
   ** order:
@@ -1700,11 +1715,7 @@ void sqlite3GenerateConstraintChecks(
     int addrUniqueOk;    /* Jump here if the UNIQUE constraint is satisfied */
 
     if( aRegIdx[ix]==0 ) continue;  /* Skip indices that do not change */
-#if defined(SQLITE_BUILDING_FOR_COMDB2)
-    if( pUpIdx==pIdx && overrideError!=OE_Ignore ){
-#else /* defined(SQLITE_BUILDING_FOR_COMDB2) */
     if( pUpIdx==pIdx ){
-#endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
       addrUniqueOk = upsertJump+1;
       upsertBypass = sqlite3VdbeGoto(v, 0);
       VdbeComment((v, "Skip upsert subroutine"));
@@ -1718,7 +1729,6 @@ void sqlite3GenerateConstraintChecks(
     }
     VdbeNoopComment((v, "uniqueness check for %s", pIdx->zName));
     iThisCur = iIdxCur+ix;
-
 
     /* Skip partial indices for which the WHERE clause is not true */
     if( pIdx->pPartIdxWhere ){
@@ -1771,15 +1781,26 @@ void sqlite3GenerateConstraintChecks(
     /* Find out what action to take in case there is a uniqueness conflict */
     onError = pIdx->onError;
 #if defined(SQLITE_BUILDING_FOR_COMDB2)
-    if ( (pUpsert || overrideError==OE_Replace) &&
-         (is_comdb2_index_unique(pIdx->pTable->zName, pIdx->zName)) ) {
+    /* At this point, we only need to perform collison detection for the
+     * following cases:
+     *
+     * (1) INSERT .. ON CONFLICT(idx) DO UPDATE ..
+     * (2) REPLACE INTO ..
+     *
+     */
+    if( (pUpsert && pUpsert->pUpsertSet!=0 && pUpIdx==pIdx) || /* Case 1 */
+        (overrideError==OE_Replace) ) {                        /* Case 2 */
+      /* Go-ahead and check for UNIQUENESS constraint violation */
       onError = OE_Abort;
-    }
-    /* We do not need to proceed further for ON CONFLICT DO NOTHING, as this
-     * this will be handled on the master. Also continue, if the current index
-     * is not an upsert target. */
-    if( overrideError==OE_Ignore ){
-      onError = OE_None;
+    } else {
+      /* Skip UNIQUENESS constraint violation check */
+      if( pUpIdx==pIdx ){
+        sqlite3VdbeGoto(v, addrUniqueOk);
+        sqlite3VdbeJumpHere(v, upsertBypass);
+      } else {
+        sqlite3VdbeResolveLabel(v, addrUniqueOk);
+      }
+      continue;
     }
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
     if( onError==OE_None ){ 
@@ -1827,16 +1848,8 @@ void sqlite3GenerateConstraintChecks(
 
     /* Check to see if the new index entry will be unique */
     sqlite3VdbeVerifyAbortable(v, onError);
-#if defined(SQLITE_BUILDING_FOR_COMDB2)
-    if( need_index_checks_for_upsert(pTab, pUpsert, onError, 1) ){
-#endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
     sqlite3VdbeAddOp4Int(v, OP_NoConflict, iThisCur, addrUniqueOk,
                          regIdx, pIdx->nKeyCol); VdbeCoverage(v);
-#if defined(SQLITE_BUILDING_FOR_COMDB2)
-    }else{
-      sqlite3VdbeGoto(v, addrUniqueOk);
-    }
-#endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
 
     /* Generate code to handle collisions */
     regR = (pIdx==pPk) ? regIdx : sqlite3GetTempRange(pParse, nPkField);
@@ -2098,7 +2111,8 @@ void sqlite3CompleteInsertion(
 #if defined(SQLITE_BUILDING_FOR_COMDB2)
   if (comdb2ForceVerify(pParse->pVdbe)) {
     pik_flags |= OPFLAG_FORCE_VERIFY;
-  } else if(comdb2IgnoreFailure(pParse->pVdbe)) {
+  }
+  if(comdb2IgnoreFailure(pParse->pVdbe)) {
     pik_flags |= OPFLAG_IGNORE_FAILURE;
   }
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */

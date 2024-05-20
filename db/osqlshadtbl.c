@@ -2211,7 +2211,9 @@ static int insert_record_indexes(BtCursor *pCur, struct sql_thread *thd,
         if (pCur->db->ix_datacopy[ix]) {
             if (pCur->db->ix_datacopylen[ix] > 0) { // partial datacopy
                 datacopy = alloca(pCur->db->ix_datacopylen[ix]);
-                rc = stag_to_stag_buf_schemas(get_schema(pCur->db, -1), get_schema(pCur->db, ix)->partial_datacopy, pCur->ondisk_buf, datacopy, NULL);
+                rc = stag_to_stag_buf_schemas(pCur->db, get_schema(pCur->db, -1),
+                                              get_schema(pCur->db, ix)->partial_datacopy,
+                                              pCur->ondisk_buf, datacopy, NULL);
                 if (rc == -1) {
                     logmsg(LOGMSG_ERROR, "insert_record:partial datacopy conversion ix %d\n", ix);
                     return SQLITE_INTERNAL;
@@ -2374,6 +2376,11 @@ void osql_shadtbl_close(struct sqlclntstate *clnt)
 {
     osqlstate_t *osql = &clnt->osql;
     shad_tbl_t *tbl = NULL, *tmp = NULL;
+
+    if (clnt->dist_txnid) {
+        free(clnt->dist_txnid);
+        clnt->dist_txnid = NULL;
+    }
 
     osql->dirty = 0;
     osql_destroy_verify_temptbl(thedb->bdb_env, clnt);

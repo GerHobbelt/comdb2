@@ -626,7 +626,7 @@ struct {
     {1, alter, do_alter_table, finalize_alter_table, NULL, NULL},
 };
 
-static int do_schema_change_tran_int(sc_arg_t *arg, int no_reset)
+static int do_schema_change_tran_int(sc_arg_t *arg)
 {
     struct ireq *iq = arg->iq;
     tran_type *trans = arg->trans;
@@ -644,11 +644,7 @@ static int do_schema_change_tran_int(sc_arg_t *arg, int no_reset)
     Pthread_cond_signal(&s->condStart);
     Pthread_mutex_unlock(&s->mtxStart);
 
-    enum thrtype oldtype = 0;
     int detached = 0;
-
-    if (!no_reset)
-        oldtype = prepare_sc_thread(s);
 
     if (!bdb_iam_master(thedb->bdb_env) || thedb->master != gbl_myhostname) {
         logmsg(LOGMSG_INFO, "%s downgraded master\n", __func__);
@@ -723,20 +719,14 @@ downgraded:
                    "%s: failed to set bdb schema change status, bdberr %d\n",
                    __func__, bdberr);
         }
-        if (!no_reset)
-            reset_sc_thread(oldtype, s);
         Pthread_mutex_unlock(&s->mtx);
         return 0;
     } else if (s->resume == SC_NEW_MASTER_RESUME || rc == SC_COMMIT_PENDING ||
                rc == SC_PREEMPTED || rc == SC_PAUSED ||
                (!s->nothrevent && !s->finalize)) {
-        if (!no_reset)
-            reset_sc_thread(oldtype, s);
         Pthread_mutex_unlock(&s->mtx);
         return rc;
     }
-    if (!no_reset)
-        reset_sc_thread(oldtype, s);
     Pthread_mutex_unlock(&s->mtx);
     if (!s->is_osql) {
         if (rc == SC_MASTER_DOWNGRADE) {
@@ -752,7 +742,15 @@ downgraded:
 
 int do_schema_change_tran(sc_arg_t *arg)
 {
-    return do_schema_change_tran_int(arg, 0);
+    struct schema_change_type *s = arg->sc;
+    enum thrtype oldtype = prepare_sc_thread(s);
+    int rc;
+
+    rc = do_schema_change_tran_int(arg);
+
+    reset_sc_thread(oldtype, s);
+
+    return rc;
 }
 
 int do_schema_change_tran_thd(sc_arg_t *arg)
@@ -762,7 +760,7 @@ int do_schema_change_tran_thd(sc_arg_t *arg)
     bdb_state_type *bdb_state = thedb->bdb_env;
     thread_started("schema_change");
     bdb_thread_event(bdb_state, 1);
-    rc = do_schema_change_tran_int(arg, 1);
+    rc = do_schema_change_tran_int(arg);
     bdb_thread_event(bdb_state, 0);
     return rc;
 }
@@ -893,6 +891,10 @@ static int verify_sc_resumed_for_shard(const char *shardname,
     int rc;
     assert(arg->s);
     sc = arg->s;
+    /*shardname can be an alias*/
+    struct dbtable *db = get_dbtable_by_name(shardname);
+    if (db->sqlaliasname)
+        shardname = db->tablename; /* use the actual table name */
     while (sc) {
         /* already resumed */
         if (strcasecmp(shardname, sc->tablename) == 0)
@@ -914,7 +916,7 @@ static int verify_sc_resumed_for_shard(const char *shardname,
     new_sc->sc_next = arg->s;
     arg->s = new_sc;
 
-    logmsg(LOGMSG_INFO, "Restarting schema change for view '%s' shard '%s'\n",
+    logmsg(LOGMSG_USER, "Restarting schema change for view '%s' shard '%s'\n",
            arg->view_name, new_sc->tablename);
     rc = start_schema_change(new_sc);
     if (rc != SC_ASYNC && rc != SC_COMMIT_PENDING) {
@@ -1166,8 +1168,8 @@ int resume_schema_change(void)
 /****************** Functions down here will likely be moved elsewhere *****/
 
 /* this assumes threads are not active in db */
-int open_temp_db_resume(struct dbtable *db, char *prefix, int resume, int temp,
-                        tran_type *tran)
+int open_temp_db_resume(struct ireq *iq, struct dbtable *db, char *prefix, int resume,
+                        int temp, tran_type *tran)
 {
     char *tmpname;
     int bdberr;
@@ -1207,17 +1209,34 @@ int open_temp_db_resume(struct dbtable *db, char *prefix, int resume, int temp,
 
     if (!db->handle) /* did not/could not open existing one, creating new one */
     {
+        int rc;
+        tran_type * tmp_tran = tran;
+        if (!tmp_tran) {
+            rc = trans_start(iq, NULL, &tmp_tran);
+            if (rc)
+                return -1;
+        }
+
         db->handle = bdb_create_tran(
             tmpname, db->dbenv->basedir, db->lrl, db->nix,
             (short *)db->ix_keylen, db->ix_dupes, db->ix_recnums,
             db->ix_datacopy, db->ix_datacopylen, db->ix_collattr, db->ix_nullsallowed,
             db->numblobs + 1, /* one main record + the blobs blobs */
-            db->dbenv->bdb_env, temp, &bdberr, tran);
+            db->dbenv->bdb_env, temp, &bdberr, tmp_tran);
         if (db->handle == NULL) {
+            if (tmp_tran != tran)
+                trans_abort(iq, tmp_tran);
+
             logmsg(LOGMSG_ERROR, "%s: failed to open %s, rcode %d\n", __func__,
                    tmpname, bdberr);
             free(tmpname);
             return -1;
+        }
+
+        if (tmp_tran != tran) {
+            rc = trans_commit(iq, tmp_tran, gbl_myhostname);
+            if (rc)
+                return -1;
         }
     }
 

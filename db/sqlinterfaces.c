@@ -1825,7 +1825,7 @@ int gbl_snapshot_serial_verify_retry = 1;
 
 inline int replicant_is_able_to_retry(struct sqlclntstate *clnt)
 {
-    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp)
+    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp || clnt->is_participant)
         return 0;
 
     if ((clnt->dbtran.mode == TRANLEVEL_SNAPISOL ||
@@ -1839,7 +1839,7 @@ inline int replicant_is_able_to_retry(struct sqlclntstate *clnt)
 
 static inline int replicant_can_retry_rc(struct sqlclntstate *clnt, int rc)
 {
-    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp)
+    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp || clnt->is_participant)
         return 0;
 
     /* Any isolation level can retry if nothing has been read */
@@ -1937,6 +1937,7 @@ static int do_commitrollback(struct sqlthdstate *thd, struct sqlclntstate *clnt,
         rc = SQLITE_OK;
     } else {
         clear_session_tbls(clnt);
+        clear_participants(clnt);
         sql_debug_logf(clnt, __func__, __LINE__, "starting\n");
 
         switch (clnt->dbtran.mode) {
@@ -2655,23 +2656,25 @@ static int check_thd_gen(struct sqlthdstate *thd, struct sqlclntstate *clnt, int
     return SQLITE_OK;
 }
 
-int release_locks_int(const char *trace, const char *func, int line)
+int release_locks_int(const char *trace, const char *func, int line, struct sqlclntstate *clnt)
 {
-    struct sql_thread *thd = pthread_getspecific(query_info_key);
-    if (!thd || !thd->clnt || !thd->clnt->dbtran.cursor_tran) return -1;
+    if (!clnt) {
+        struct sql_thread *thd = pthread_getspecific(query_info_key);
+        if (thd) clnt = thd->clnt;
+    }
+    if (!clnt || !clnt->dbtran.cursor_tran) return -1;
     extern int gbl_sql_release_locks_trace;
     if (gbl_sql_release_locks_trace) {
         logmsg(LOGMSG_USER, "Releasing locks for lockid %d, %s\n",
-               bdb_get_lid_from_cursortran(thd->clnt->dbtran.cursor_tran), trace);
+               bdb_get_lid_from_cursortran(clnt->dbtran.cursor_tran), trace);
     }
-    return recover_deadlock_flags(thedb->bdb_env, thd->clnt, NULL, -1, func, line, 0);
+    return recover_deadlock_flags(thedb->bdb_env, clnt, NULL, -1, func, line, 0);
 }
 
 /* Release-locks if rep-thread is blocked longer than this many ms */
 int gbl_rep_wait_release_ms = 60000;
 
-int release_locks_on_emit_row(struct sqlthdstate *thd,
-                              struct sqlclntstate *clnt)
+int release_locks_on_emit_row(struct sqlclntstate *clnt)
 {
     extern int gbl_locks_check_waiters;
     extern int gbl_sql_release_locks_on_emit_row;
@@ -2681,7 +2684,7 @@ int release_locks_on_emit_row(struct sqlthdstate *thd,
 
     /* Always release if we're emitting during a master change */
     if (bdb_lock_desired(thedb->bdb_env))
-        return release_locks("release locks on emit-row for lock-desired");
+        return release_locks_int("release locks on emit-row for lock-desired", __func__, __LINE__, clnt);
 
     /* Short circuit if check-waiters or tunable is disabled */
     if (!gbl_locks_check_waiters)
@@ -2693,7 +2696,7 @@ int release_locks_on_emit_row(struct sqlthdstate *thd,
     /* Release locks randomly for testing */
     if (gbl_sql_random_release_interval &&
         !(rand() % gbl_sql_random_release_interval))
-        return release_locks("random release emit-row");
+        return release_locks_int("random release emit-row", __func__, __LINE__, clnt);
 
     /* Short circuit if we don't have any waiters */
     if (!bdb_curtran_has_waiters(thedb->bdb_env, clnt->dbtran.cursor_tran))
@@ -2701,12 +2704,12 @@ int release_locks_on_emit_row(struct sqlthdstate *thd,
 
     /* We're emitting a row & have waiters */
     if (!gbl_rep_wait_release_ms || thedb->master == gbl_myhostname)
-        return release_locks("release locks on emit-row");
+        return release_locks_int("release locks on emit-row", __func__, __LINE__, clnt);
 
     /* We're emitting a row and are blocking replication */
     if (rep_lock_time_ms &&
         (comdb2_time_epochms() - rep_lock_time_ms) > gbl_rep_wait_release_ms)
-        return release_locks("long repwait at emit-row");
+        return release_locks_int("long repwait at emit-row", __func__, __LINE__, clnt);
 
     return 0;
 }
@@ -2777,6 +2780,7 @@ void query_stats_setup(struct sqlthdstate *thd, struct sqlclntstate *clnt)
         logmsg(LOGMSG_USER, "SQL mode=%d [%s]\n", clnt->dbtran.mode, clnt->sql);
 
     reqlog_set_clnt(thd->logger, clnt);
+    reqlog_set_api_type(thd->logger, clnt->plugin.api_type(clnt));
 }
 
 int param_count(struct sqlclntstate *clnt)
@@ -3769,7 +3773,7 @@ static int run_stmt(struct sqlthdstate *thd, struct sqlclntstate *clnt,
         clnt->last_sent_row_sec = time(NULL);
 
         /* replication contention reduction */
-        rc = release_locks_on_emit_row(thd, clnt);
+        rc = release_locks_on_emit_row(clnt);
         if (rc) {
             logmsg(LOGMSG_ERROR, "%s: release_locks_on_emit_row failed\n",
                    __func__);
@@ -5206,6 +5210,23 @@ void cleanup_clnt(struct sqlclntstate *clnt)
         free(clnt->saved_errstr);
         clnt->saved_errstr = NULL;
     }
+    if (clnt->dist_txnid) {
+        free(clnt->dist_txnid);
+        clnt->dist_txnid = NULL;
+    }
+    if (clnt->coordinator_dbname) {
+        free(clnt->coordinator_dbname);
+        clnt->coordinator_dbname = NULL;
+    }
+    if (clnt->coordinator_tier) {
+        free(clnt->coordinator_tier);
+        clnt->coordinator_tier = NULL;
+    }
+    if (clnt->coordinator_master) {
+        free(clnt->coordinator_master);
+        clnt->coordinator_master = NULL;
+    }
+
     clnt->sqlite_errstr = NULL;
     if (clnt->context) {
         for (int i = 0; i < clnt->ncontext; i++) {
@@ -5279,19 +5300,20 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
         Pthread_mutex_init(&clnt->sql_tick_lk, NULL);
         Pthread_mutex_init(&clnt->sql_lk, NULL);
         TAILQ_INIT(&clnt->session_tbls);
+        listc_init(&clnt->participants, offsetof(struct participant, linkv));
     } else {
-       clnt->sql_since_reset = 0;
-       clnt->num_resets++;
-       clnt->last_reset_time = comdb2_time_epoch();
-       clnt_change_state(clnt, CONNECTION_RESET);
-       clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
-       if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
-           if (gbl_unexpected_last_type_warn)
-               logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n",
-                      clnt->lastresptype, clnt->origin, clnt->argv0);
-           if (gbl_unexpected_last_type_abort)
-               abort();
-       }
+        clnt->sql_since_reset = 0;
+        clnt->num_resets++;
+        clnt->last_reset_time = comdb2_time_epoch();
+        clnt_change_state(clnt, CONNECTION_RESET);
+        clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
+        if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
+            if (gbl_unexpected_last_type_warn)
+                logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n", clnt->lastresptype,
+                       clnt->origin, clnt->argv0);
+            if (gbl_unexpected_last_type_abort)
+                abort();
+        }
     }
 
     clnt->pPool = NULL; /* REDUNDANT? */
@@ -5375,6 +5397,15 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     clnt->snapshot = 0;
     clnt->num_retry = 0;
     clnt->early_retry = 0;
+
+    clnt->use_2pc = 0;
+    clnt->is_coordinator = 0;
+    clnt->is_participant = 0;
+    clear_participants(clnt);
+    if (clnt->dist_txnid) {
+        free(clnt->dist_txnid);
+        clnt->dist_txnid = NULL;
+    }
 
     clear_session_tbls(clnt);
 
@@ -5498,7 +5529,7 @@ static int recover_deadlock_sbuf(struct sqlclntstate *clnt)
 
     /* Sql thread */
     if (thd) {
-        if (release_locks("slow reader") != 0) {
+        if (release_locks_int("slow reader", __func__, __LINE__, clnt) != 0) {
             assert(bdb_lockref() == 0);
             logmsg(LOGMSG_ERROR, "%s release_locks failed\n", __func__);
             return 1;
@@ -7023,6 +7054,10 @@ static int internal_get_x509_attr(struct sqlclntstate *a, int b, void *c, int d)
 static int internal_set_timeout(struct sqlclntstate *clnt, int timeout_ms)
 {
     return -1;
+}
+static const char * internal_api_type(struct sqlclntstate *clnt)
+{
+    return "internal";
 }
 
 void start_internal_sql_clnt(struct sqlclntstate *clnt)

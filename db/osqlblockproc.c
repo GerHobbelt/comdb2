@@ -55,6 +55,7 @@
 #include "sc_global.h"
 #include "sc_logic.h"
 #include "gettimeofday_ms.h"
+#include <disttxn.h>
 
 extern int gbl_reorder_idx_writes;
 extern uint32_t gbl_max_time_per_txn_ms;
@@ -114,7 +115,13 @@ static int apply_changes(struct ireq *iq, blocksql_tran_t *tran, void *iq_tran,
 static int req2blockop(int reqtype);
 extern const char *get_tablename_from_rpl(int is_uuid, const char *rpl,
                                           int *tableversion);
-extern void live_sc_off(struct dbtable * db);
+
+void get_dist_txnid_from_dist_txn_rpl(int is_uuid, char *rpl, int rplen, char **dist_txnid);
+void get_dist_txnid_from_prepare_rpl(int is_uuid, char *rpl, int rplen, char **dist_txnid);
+
+void get_participant_from_rpl(int is_uuid, char *rpl, int rplen, char **participant_name, char **participant_tier);
+
+extern void live_sc_off(struct dbtable *db);
 
 #define CMP_KEY_MEMBER(k1, k2, var)                                            \
     if (k1->var < k2->var) {                                                   \
@@ -515,8 +522,24 @@ static void setup_reorder_key(blocksql_tran_t *tran, int type,
 
 static void osql_cache_selectv(blocksql_tran_t *tran, char *rpl, int type);
 
-static void _pre_process_saveop(osql_sess_t *sess, blocksql_tran_t *tran,
-                                char *rpl, int rplen, int type)
+static void sess_save_participant(osql_sess_t *sess, int is_uuid, char *rpl, int rplen)
+{
+    struct participant *p = calloc(sizeof(*p), 1), *chk;
+    get_participant_from_rpl(is_uuid, rpl, rplen, &p->participant_name, &p->participant_tier);
+
+    LISTC_FOR_EACH(&sess->participants, chk, linkv)
+    {
+        if (!strcmp(chk->participant_name, p->participant_name) &&
+            !strcmp(chk->participant_tier, p->participant_tier)) {
+            logmsg(LOGMSG_FATAL, "%s/%s participant %s already on list??\n", __func__, p->participant_name,
+                   p->participant_tier);
+            abort();
+        }
+    }
+    listc_atl(&sess->participants, p);
+}
+
+static void _pre_process_saveop(osql_sess_t *sess, blocksql_tran_t *tran, char *rpl, int rplen, int type)
 {
     switch (type) {
     case OSQL_SCHEMACHANGE:
@@ -536,6 +559,21 @@ static void _pre_process_saveop(osql_sess_t *sess, blocksql_tran_t *tran,
         if (need_views_lock(rpl, rplen, tran->is_uuid) == 1) {
             sess->is_tptlock = 1;
         }
+        break;
+    case OSQL_PREPARE:
+        get_dist_txnid_from_prepare_rpl(tran->is_uuid, rpl, rplen, &sess->dist_txnid);
+        Pthread_mutex_lock(&sess->participant_lk);
+        sess->is_participant = 1;
+        sess->is_sanctioned = osql_register_disttxn(sess->dist_txnid, sess->rqid, sess->uuid, &sess->coordinator_dbname,
+                                                    &sess->coordinator_tier, &sess->coordinator_master);
+        Pthread_mutex_unlock(&sess->participant_lk);
+        break;
+    case OSQL_DIST_TXNID:
+        get_dist_txnid_from_dist_txn_rpl(tran->is_uuid, rpl, rplen, &sess->dist_txnid);
+        sess->is_coordinator = 1;
+        break;
+    case OSQL_PARTICIPANT:
+        sess_save_participant(sess, tran->is_uuid, rpl, rplen);
         break;
     }
 
@@ -1263,52 +1301,48 @@ int bplog_schemachange(struct ireq *iq, blocksql_tran_t *tran, void *err)
 
 
     if (rc) {
-        if (rc == ERR_NOMASTER) {
-            /* IFF the schema changes are NOT aborted, clean in-mem structures but
-             * leave persistent and replicated changes (llmeta, new btree-s) so
-             * that a new master/resume will pick it up later
-             * NOTE: this clears iq->sc_pending, obviously (sc-s are freed), so
-             * the rest of schema change code -finalize, callback hooks- do NOT
-             * trigger anymore (they should not, they will do it when future resume
-             * finishes)
-             * NOTE2: if sc_should_abort is set, the bplog writer will call 
-             * backout_schema_change and sc_abort callback, which they will 
-             * clear any persistent and in-mem structures 
-             */
-            struct schema_change_type *next;
-            sc = iq->sc_pending;
-            while (sc != NULL) {
-                next = sc->sc_next;
-                if (sc->newdb && sc->newdb->handle) {
-                    int bdberr = 0;
-                    live_sc_off(sc->db);
-                    while (sc->logical_livesc) {
-                        usleep(200);
-                    }
-                    if (sc->db->sc_live_logical) {
-                        bdb_clear_logical_live_sc(sc->db->handle, 1);
-                        sc->db->sc_live_logical = 0;
-                    }
-                    if (rc == ERR_NOMASTER)
-                        sc_set_downgrading(sc);
-                    bdb_close_only(sc->newdb->handle, &bdberr);
-                    freedb(sc->newdb);
-                    sc->newdb = NULL;
+        /* IFF the schema changes are NOT aborted, clean in-mem structures but
+         * leave persistent and replicated changes (llmeta, new btree-s) so
+         * that a new master/resume will pick it up later
+         * NOTE: this clears iq->sc_pending, obviously (sc-s are freed), so
+         * the rest of schema change code -finalize, callback hooks- do NOT
+         * trigger anymore (they should not, they will do it when future resume
+         * finishes)
+         * NOTE2: if sc_should_abort is set, the bplog writer will call 
+         * backout_schema_change and sc_abort callback, which they will 
+         * clear any persistent and in-mem structures 
+         */
+        struct schema_change_type *next;
+        sc = iq->sc_pending;
+        while (sc != NULL) {
+            next = sc->sc_next;
+            if (sc->newdb && sc->newdb->handle) {
+                int bdberr = 0;
+                live_sc_off(sc->db);
+                while (sc->logical_livesc) {
+                    usleep(200);
+                }
+                if (sc->db->sc_live_logical) {
+                    bdb_clear_logical_live_sc(sc->db->handle, 1);
+                    sc->db->sc_live_logical = 0;
                 }
                 sc_set_running(iq, sc, sc->tablename, 0, NULL, 0, 0, __func__,
-                           __LINE__);
-                free_schema_change_type(sc);
-                sc = next;
-            }
-            iq->sc_pending = NULL;
-        } else {
-            sc = iq->sc_pending;
-            while (sc != NULL) {
+                               __LINE__);
+                if (rc == ERR_NOMASTER) {
+                        sc_set_downgrading(sc);
+                        bdb_close_only(sc->newdb->handle, &bdberr);
+                        freedb(sc->newdb);
+                        sc->newdb = NULL;
+                        free_schema_change_type(sc);
+                }
+            } else {
                 sc_set_running(iq, sc, sc->tablename, 0, NULL, 0, 0, __func__,
-                           __LINE__);
-                sc = sc->sc_next;
+                               __LINE__);
             }
+            sc = next;
         }
+        if (rc == ERR_NOMASTER)
+            iq->sc_pending = NULL;
     }
     logmsg(LOGMSG_INFO, ">>> DDL SCHEMA CHANGE RC %d <<<\n", rc);
 

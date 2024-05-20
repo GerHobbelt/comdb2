@@ -1183,6 +1183,18 @@ typedef struct bpfunc_lstnode {
 } bpfunc_lstnode_t;
 
 typedef LISTC_T(bpfunc_lstnode_t) bpfunc_list_t;
+
+struct participant {
+    char *participant_name;
+    char *participant_tier;
+    char *participant_master;
+    time_t last_heartbeat;
+    int status;
+    LINKC_T(struct participant) linkv;
+};
+
+typedef LISTC_T(struct participant) participant_list_t;
+
 /*******************************************************************/
 
 enum OSQL_REQ_TYPE {
@@ -1256,6 +1268,21 @@ struct osql_sess {
     int is_tranddl;
     int is_tptlock;   /* needs tpt locking */
     int is_cancelled; /* 1 if session is cancelled */
+
+    /* 2pc maintained in session */
+    unsigned is_participant : 1;
+    unsigned is_coordinator : 1;
+
+    char *dist_txnid;
+    char *coordinator_dbname;
+    char *coordinator_tier;
+    char *coordinator_master;
+    participant_list_t participants;
+
+    /* these are set asynchronously */
+    pthread_mutex_t participant_lk;
+    int is_done;
+    int is_sanctioned; /* set by fdb from coordinator-master */
 };
 typedef struct osql_sess osql_sess_t;
 
@@ -1302,6 +1329,9 @@ struct ireq {
     int luxref;
     uint8_t osql_rowlocks_enable;
     uint8_t osql_genid48_enable;
+
+    int commit_file;
+    int commit_offset;
 
     /************/
     /* REGION 2 */
@@ -2082,10 +2112,10 @@ tran_type *trans_start_readcommitted(struct ireq *, int trak);
 tran_type *trans_start_serializable(struct ireq *, int trak, int epoch,
                                     int file, int offset, int *error,
                                     int is_ha_retry);
-tran_type *trans_start_snapisol(struct ireq *, int trak, int epoch, int file,
-                                int offset, int *error, int is_ha_retry);
+tran_type *trans_start_snapisol(struct ireq *, int trak, int epoch, int file, int offset, int *error, int is_ha_retry);
 tran_type *trans_start_socksql(struct ireq *, int trak);
 int trans_commit(struct ireq *iq, void *trans, char *source_host);
+int trans_commit_nowait(struct ireq *iq, void *trans, char *source_host);
 int trans_commit_seqnum(struct ireq *iq, void *trans, db_seqnum_type *seqnum);
 int trans_commit_adaptive(struct ireq *iq, void *trans, char *source_host);
 int trans_commit_logical(struct ireq *iq, void *trans, char *source_host,
@@ -2095,6 +2125,7 @@ int trans_abort(struct ireq *iq, void *trans);
 int trans_abort_priority(struct ireq *iq, void *trans, int *priority);
 int trans_abort_logical(struct ireq *iq, void *trans, void *blkseq, int blklen,
                         void *blkkey, int blkkeylen);
+int trans_discard_prepared(struct ireq *iq, void *trans);
 int trans_wait_for_seqnum(struct ireq *iq, char *source_host,
                           db_seqnum_type *ss);
 int trans_wait_for_last_seqnum(struct ireq *iq, char *source_host);
@@ -2770,15 +2801,14 @@ enum {
     RECFLAGS_DONT_SKIP_BLOBS = 1 << 7,
     RECFLAGS_ADD_FROM_SC_LOGICAL = 1 << 8,
     /* used for upgrade record */
-    RECFLAGS_UPGRADE_RECORD = RECFLAGS_DYNSCHEMA_NULLS_ONLY |
-                              RECFLAGS_KEEP_GENID | RECFLAGS_NO_TRIGGERS |
-                              RECFLAGS_NO_CONSTRAINTS | RECFLAGS_NO_BLOBS |
-                              1 << 9,
+    RECFLAGS_UPGRADE_RECORD = RECFLAGS_DYNSCHEMA_NULLS_ONLY | RECFLAGS_KEEP_GENID | RECFLAGS_NO_TRIGGERS |
+                              RECFLAGS_NO_CONSTRAINTS | RECFLAGS_NO_BLOBS | 1 << 9,
     RECFLAGS_IN_CASCADE = 1 << 10,
     RECFLAGS_DONT_LOCK_TBL = 1 << 11,
     RECFLAGS_COMDBG_FROM_LE = 1 << 12,
+    RECFLAGS_INLINE_CONSTRAINTS = 1 << 13,
 
-    RECFLAGS_MAX = 1 << 12
+    RECFLAGS_MAX = 1 << 13
 };
 
 /* flag codes */
@@ -3550,8 +3580,8 @@ int cmp_index_int(struct schema *oldix, struct schema *newix, char *descr,
                   size_t descrlen);
 int getdbidxbyname_ll(const char *p_name);
 int get_dbtable_idx_by_name(const char *tablename);
-int open_temp_db_resume(struct dbtable *db, char *prefix, int resume, int temp,
-                        tran_type *tran);
+int open_temp_db_resume(struct ireq *iq, struct dbtable *db, char *prefix, int resume,
+                        int temp, tran_type *tran);
 int find_constraint(struct dbtable *db, constraint_t *ct);
 
 /* END OF SCHEMACHANGE DECLARATIONS*/
@@ -3563,11 +3593,7 @@ void disconnect_remote_db(const char *protocol, const char *dbname, const char *
                           SBUF2 **psb);
 
 void sbuf2gettimeout(SBUF2 *sb, int *read, int *write);
-int sbuf2fread_timeout(char *ptr, int size, int nitems, SBUF2 *sb,
-                       int *was_timeout);
-int release_locks_int(const char *trace, const char *func, int line);
-#define release_locks(trace) release_locks_int(trace, __func__, __LINE__)
-
+int sbuf2fread_timeout(char *ptr, int size, int nitems, SBUF2 *sb, int *was_timeout);
 unsigned long long verify_indexes(struct dbtable *db, uint8_t *rec,
                                   blob_buffer_t *blobs, size_t maxblobs,
                                   int is_alter);

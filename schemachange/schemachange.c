@@ -975,7 +975,7 @@ static int add_table_for_recovery(struct ireq *iq, struct schema_change_type *s)
 
     bdb_get_new_prefix(new_prefix, sizeof(new_prefix), &bdberr);
 
-    rc = open_temp_db_resume(newdb, new_prefix, 1, 0, NULL);
+    rc = open_temp_db_resume(iq, newdb, new_prefix, 1, 0, NULL);
     if (rc) {
         backout_schemas(newdb->tablename);
         abort();
@@ -1312,6 +1312,9 @@ int sc_timepart_truncate_table(const char *tableName, struct errstat *xerr,
         errstat_set_rcstrf(xerr, SC_VIEW_ERR_SC, "failed to truncate table");
         return xerr->errval;
     }
+
+    create_sqlmaster_records(NULL);
+    create_sqlite_master();
 
     bzero(xerr, sizeof(*xerr));
     return 0;

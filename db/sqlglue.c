@@ -2421,6 +2421,35 @@ void clear_session_tbls(struct sqlclntstate *clnt)
     }
 }
 
+int add_participant(struct sqlclntstate *clnt, const char *dbname, const char *tier)
+{
+    struct participant *p;
+    LISTC_FOR_EACH(&clnt->participants, p, linkv)
+    {
+        if (!strcmp(p->participant_name, dbname) && !strcmp(p->participant_tier, tier)) {
+            logmsg(LOGMSG_ERROR, "%s %s:%s added more than once to participants\n", __func__, dbname, tier);
+            return -1;
+        }
+    }
+    p = calloc(sizeof(struct participant), 1);
+    p->participant_name = strdup(dbname);
+    p->participant_tier = strdup(tier);
+    listc_atl(&clnt->participants, p);
+    return 0;
+}
+
+void clear_participants(struct sqlclntstate *clnt)
+{
+    struct participant *p = listc_rtl(&clnt->participants), *freep;
+    while (p) {
+        free(p->participant_name);
+        free(p->participant_tier);
+        freep = p;
+        p = listc_rtl(&clnt->participants);
+        free(freep);
+    }
+}
+
 static int move_is_nop(BtCursor *pCur, int *pRes)
 {
     if (*pRes != 1 || pCur->cursor_class != CURSORCLASS_INDEX) {
@@ -4772,6 +4801,7 @@ int start_new_transaction(struct sqlclntstate *clnt, struct sql_thread *thd)
 
     clnt->intrans = 1;
     clear_session_tbls(clnt);
+    clear_participants(clnt);
 
 #ifdef DEBUG_TRAN
     if (gbl_debug_sql_opcodes) {
@@ -4895,6 +4925,10 @@ int sqlite3BtreeBeginTrans(Vdbe *vdbe, Btree *pBt, int wrflag, int *pSchemaVersi
     }
 
     rc = start_new_transaction(clnt, thd);
+
+    /* 2pc on tunable, only here for now */
+    extern int gbl_2pc;
+    clnt->use_2pc = gbl_2pc;
 
 done:
     if (rc == SQLITE_OK && pSchemaVersion) {
@@ -5226,6 +5260,7 @@ int sqlite3BtreeRollback(Btree *pBt, int dummy, int writeOnlyDummy)
 
     clnt->intrans = 0;
     clear_session_tbls(clnt);
+    clear_participants(clnt);
 
     /* UPSERT: Restore the isolation level back to what it was. */
     if (clnt->dbtran.mode == TRANLEVEL_RECOM && clnt->translevel_changed) {
@@ -9027,8 +9062,9 @@ int sqlite3BtreeInsert(
                      */
                     rec_flags = ((comdb2UpsertIdx(pCur->vdbe) << 8) |
                                  OSQL_IGNORE_FAILURE);
-                } else if (flags & OPFLAG_FORCE_VERIFY) {
-                    rec_flags = OSQL_FORCE_VERIFY;
+                }
+                if (flags & OPFLAG_FORCE_VERIFY) {
+                    rec_flags |= OSQL_FORCE_VERIFY;
                 }
             }
 
@@ -9820,7 +9856,9 @@ static int recover_deadlock_flags_int(bdb_state_type *bdb_state,
                                       const char *func, int line,
                                       uint32_t flags)
 {
-    struct sql_thread *thd = clnt->thd->sqlthd;
+    struct sql_thread *thd = pthread_getspecific(query_info_key);
+    if (!thd) return -1; /* Not an SQL thread */
+
     int ignore_desired = flags & RECOVER_DEADLOCK_IGNORE_DESIRED;
     int ptrace = (flags & RECOVER_DEADLOCK_PTRACE);
     int force_fail = (flags & RECOVER_DEADLOCK_FORCE_FAIL);
@@ -11237,6 +11275,9 @@ void disconnect_remote_db(const char *protocol, const char *dbname, const char *
 /* use portmux to open an SBUF2 to local db or proxied db
    it is trying to use sockpool
  */
+
+int gbl_fdb_socket_timeout_ms;
+
 SBUF2 *connect_remote_db(const char *protocol, const char *dbname, const char *service, char *host, int use_cache)
 {
     SBUF2 *sb;
@@ -11290,7 +11331,7 @@ sbuf:
         return NULL;
     }
 
-    sbuf2settimeout(sb, IOTIMEOUTMS, IOTIMEOUTMS);
+    sbuf2settimeout(sb, gbl_fdb_socket_timeout_ms, gbl_fdb_socket_timeout_ms);
 
     return sb;
 }
@@ -11972,13 +12013,15 @@ static int queryOverlapsCursors(struct sqlclntstate *clnt, BtCursor *pCur)
     return clnt->is_overlapping;
 }
 
-static void ondisk_blob_to_sqlite_mem(struct field *f, Mem *m,
+static void ondisk_blob_to_sqlite_mem(const struct dbtable *tbl, struct field *f, Mem *m,
                                       blob_buffer_t *blobs, size_t maxblobs)
 {
     assert(!blobs || f->blob_index < maxblobs);
     if (blobs && blobs[f->blob_index].exists) {
-        m->z = blobs[f->blob_index].data;
-        m->n = blobs[f->blob_index].length;
+        blob_buffer_t *blob = &blobs[f->blob_index];
+        unodhfy_blob_buffer(tbl, blob, f->blob_index);
+        m->z = blob->data;
+        m->n = blob->length;
         if (m->z == NULL)
             m->z = "";
         else
@@ -11998,7 +12041,7 @@ static void ondisk_blob_to_sqlite_mem(struct field *f, Mem *m,
     }
 }
 
-static int get_data_from_ondisk(struct schema *sc, uint8_t *in,
+static int get_data_from_ondisk(const struct dbtable *tbl, struct schema *sc, uint8_t *in,
                                 blob_buffer_t *blobs, size_t maxblobs, int fnum,
                                 Mem *m, uint8_t flip_orig, const char *tzname)
 {
@@ -12302,7 +12345,7 @@ static int get_data_from_ondisk(struct schema *sc, uint8_t *in,
             /*fprintf(stderr, "m->n = %d\n", m->n); */
             m->flags |= MEM_Blob;
         } else {
-            ondisk_blob_to_sqlite_mem(f, m, blobs, maxblobs);
+            ondisk_blob_to_sqlite_mem(tbl, f, m, blobs, maxblobs);
         }
 
         break;
@@ -12327,13 +12370,13 @@ static int get_data_from_ondisk(struct schema *sc, uint8_t *in,
             /*fprintf(stderr, "m->n = %d\n", m->n); */
             m->flags = MEM_Str | MEM_Ephem;
         } else {
-            ondisk_blob_to_sqlite_mem(f, m, blobs, maxblobs);
+            ondisk_blob_to_sqlite_mem(tbl, f, m, blobs, maxblobs);
         }
         break;
     }
 
     case SERVER_BLOB: {
-        ondisk_blob_to_sqlite_mem(f, m, blobs, maxblobs);
+        ondisk_blob_to_sqlite_mem(tbl, f, m, blobs, maxblobs);
         break;
     }
     case SERVER_DECIMAL:
@@ -12544,7 +12587,7 @@ unsigned long long verify_indexes(struct dbtable *db, uint8_t *rec,
 
     for (i = 0; i < sc->nmembers; i++) {
         memset(&m[i], 0, sizeof(Mem));
-        rc = get_data_from_ondisk(sc, rec, blobs, maxblobs, i, &m[i], 0,
+        rc = get_data_from_ondisk(db, sc, rec, blobs, maxblobs, i, &m[i], 0,
                                   "America/New_York");
         if (rc) {
             logmsg(LOGMSG_ERROR, "%s: failed to convert to ondisk\n", __func__);
@@ -12640,9 +12683,9 @@ char *indexes_expressions_unescape(char *expr)
     return new_expr;
 }
 
-int indexes_expressions_data(struct schema *sc, const char *inbuf, char *outbuf,
-                             blob_buffer_t *blobs, size_t maxblobs,
-                             struct field *f,
+int indexes_expressions_data(const struct dbtable *tbl, struct schema *sc,
+                             const char *inbuf, char *outbuf, blob_buffer_t *blobs,
+                             size_t maxblobs, struct field *f,
                              struct convert_failure *fail_reason,
                              const char *tzname)
 {
@@ -12669,7 +12712,7 @@ int indexes_expressions_data(struct schema *sc, const char *inbuf, char *outbuf,
 
     for (i = 0; i < sc->nmembers; i++) {
         memset(&m[i], 0, sizeof(Mem));
-        rc = get_data_from_ondisk(sc, (uint8_t *)inbuf, blobs, maxblobs, i,
+        rc = get_data_from_ondisk(tbl, sc, (uint8_t *)inbuf, blobs, maxblobs, i,
                                   &m[i], 0, tzname);
         if (rc) {
             logmsg(LOGMSG_ERROR, "%s: failed to convert to ondisk\n", __func__);
@@ -12946,7 +12989,7 @@ int verify_check_constraints(struct dbtable *table, uint8_t *rec,
 
     for (int i = 0; i < sc->nmembers; ++i) {
         memset(&m[i], 0, sizeof(Mem));
-        rc = get_data_from_ondisk(sc, rec, blobs, maxblobs, i, &m[i], 0,
+        rc = get_data_from_ondisk(table, sc, rec, blobs, maxblobs, i, &m[i], 0,
                                   "America/New_York");
         if (rc) {
             logmsg(LOGMSG_ERROR, "%s: failed to get field from record",
@@ -13020,8 +13063,9 @@ int clnt_check_bdb_lock_desired(struct sqlclntstate *clnt)
     struct sql_thread *thd = pthread_getspecific(query_info_key);
     int rc;
 
-    if (!thd || !bdb_lock_desired(thedb->bdb_env))
+    if (!thd || !bdb_lock_desired(thedb->bdb_env) || !clnt->dbtran.cursor_tran) {
         return 0;
+    }
 
     logmsg(LOGMSG_WARN, "bdb_lock_desired so calling recover_deadlock\n");
 

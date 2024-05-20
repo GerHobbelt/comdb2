@@ -70,6 +70,7 @@ void berk_memp_sync_alarm_ms(int);
 
 #include <net.h>
 #include <bdb_api.h>
+#include <disttxn.h>
 #include <sbuf2.h>
 #include "quantize.h"
 #include "timers.h"
@@ -737,6 +738,7 @@ int gbl_lock_get_list_start = 0;
 int gbl_dump_locks_on_repwait = 0;
 
 int gbl_slow_rep_process_txn_maxms = 0;
+int gbl_slow_rep_process_txn_minms = 0;
 int gbl_slow_rep_process_txn_freq = 0;
 int gbl_check_page_in_recovery = 0;
 int gbl_cmptxn_inherit_locks = 1;
@@ -3869,6 +3871,8 @@ static int init(int argc, char **argv)
     if (gbl_berkdb_iomap) 
         bdb_berkdb_iomap_set(thedb->bdb_env, 1);
 
+    disttxn_init();
+
     if (!gbl_exit && gbl_new_snapisol && gbl_snapisol) {
         bdb_attr_set(thedb->bdb_attr, BDB_ATTR_PAGE_ORDER_TABLESCAN, 0);
 
@@ -6303,3 +6307,4 @@ static void create_service_file(const char *lrlname)
 #endif
     return;
 }
+

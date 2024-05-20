@@ -70,6 +70,7 @@ int gbl_debug_drop_nth_rep_message = 0;
 
 extern struct thdpool *gbl_udppfault_thdpool;
 extern int gbl_commit_delay_trace;
+extern int gbl_2pc;
 
 /* osqlcomm.c code, hurray! */
 extern void osql_decom_node(char *decom_host);
@@ -1739,6 +1740,17 @@ uint64_t next_commit_timestamp(void)
 /* Make sure that nothing commits before the timestamp set here.
  * This is called when a node changes to from STATE_COHERENT to
  * any other state.  The coherent_state_lock will be held. */
+
+/* Notice that we stop ALL commits rather than just the commit
+ * which caused the replicant to go incoherent.  The reason is
+ * that we've already marked this node as 'incoherent' - which
+ * means that the transaction directly FOLLOWING the one which
+ * caused the incohrent replicant will not wait on that replicant.
+ * However, because the lease for that replicant hasn't yet
+ * expired, that client (which wrote later) will still be able
+ * to communicate with that node, and therefore not see the
+ * data that it just wrote */
+
 static inline void defer_commits_int(bdb_state_type *bdb_state,
                                      const char *host, const char *func,
                                      int forupgrade)
@@ -2093,10 +2105,58 @@ void send_newmaster(bdb_state_type *bdb_state, int online)
     bdb_add_dummy_llmeta_wait(online);
 }
 
+/* Return true if current generation has committed durably, false otherwise */
+int bdb_committed_durable(bdb_state_type *bdb_state)
+{
+    DB_LSN durable_lsn = {0};
+    uint32_t current_gen, durable_gen;
+
+    /* Assert read-reference on bdb-lock */
+    assert(bdb_lockref() > 0);
+
+    /* Answer 0 if we are not master */
+    if (!bdb_iam_master(bdb_state)) {
+        return 0;
+    }
+
+    /* Compare current gen with last durable gen */
+    bdb_state->dbenv->get_rep_gen(bdb_state->dbenv, &current_gen);
+    bdb_state->dbenv->get_durable_lsn(bdb_state->dbenv, &durable_lsn, &durable_gen);
+
+    logmsg(LOGMSG_DEBUG, "%s returning %d, current_gen=%d  durable_gen=%d\n", __func__, (current_gen == durable_gen),
+           current_gen, durable_gen);
+
+    return (current_gen == durable_gen);
+}
+
+/* Block until this lsn becomes durable */
+int bdb_block_durable(bdb_state_type *bdb_state, DB_LSN *lsn)
+{
+    DB_LSN dlsn = {0};
+    uint32_t gen;
+    int lock_desired = 0;
+
+    /* Assert read-reference on bdb-lock (no need to check generation) */
+    assert(bdb_lockref() > 0);
+    Pthread_mutex_lock(&bdb_state->durable_lsn_lk);
+    bdb_state->dbenv->get_durable_lsn(bdb_state->dbenv, &dlsn, &gen);
+    while ((log_compare(&dlsn, lsn) < 0) && !(lock_desired = bdb_lock_desired(bdb_state))) {
+        logmsg(LOGMSG_DEBUG, "%s waiting for lsn %d:%d to become durable (current durable is %d:%d)\n", __func__,
+               lsn->file, lsn->offset, dlsn.file, dlsn.offset);
+        struct timespec waittime;
+        setup_waittime(&waittime, 1000);
+        pthread_cond_timedwait(&bdb_state->durable_lsn_cd, &bdb_state->durable_lsn_lk, &waittime);
+        bdb_state->dbenv->get_durable_lsn(bdb_state->dbenv, &dlsn, &gen);
+    }
+    Pthread_mutex_unlock(&bdb_state->durable_lsn_lk);
+
+    return lock_desired;
+}
+
 /* Called by the master to periodically broadcast the durable lsn.  The
  * algorithm: sort lsns of all nodes (including master's).  The durable lsn will
  * be in the (n/2)th spot.  We can only make claims about durability for things
- * in our own generation.  Discard everything else. 
+ * in our own generation.  Discard everything else.
  * NOTE: this will sometimes give a lsn which is less than the actual durable
  * lsn, but it will never return a value which is greater.
  */
@@ -2299,6 +2359,9 @@ static inline int should_copy_seqnum(bdb_state_type *bdb_state, seqnum_type *seq
     return 1;
 }
 
+/* Added for testing- allows us to test slow-replicant-check and inactive-timeout separately */
+int gbl_incoherent_slow_inactive_timeout = 1;
+
 static void got_new_seqnum_from_node(bdb_state_type *bdb_state,
                                      seqnum_type *seqnum, char *host,
                                      struct interned_string *hostinterned,
@@ -2426,8 +2489,8 @@ static void got_new_seqnum_from_node(bdb_state_type *bdb_state,
      * give nodes a chance to dig themselves out if there's no activity (eg: if
      * they went incoherent because of a
      * read spike, but there's nomore reads or writes). */
-    if (change_coherency &&
-        h->coherent_state == STATE_INCOHERENT_SLOW) {
+    if (change_coherency && h->coherent_state == STATE_INCOHERENT_SLOW && gbl_incoherent_slow_inactive_timeout) {
+        int print_message = 0;
         Pthread_mutex_lock(&slow_node_check_lk);
         if ((comdb2_time_epochms() - last_slow_node_check_time) >
                 bdb_state->attr->slowrep_inactive_timeout &&
@@ -2436,9 +2499,14 @@ static void got_new_seqnum_from_node(bdb_state_type *bdb_state,
             if (h->coherent_state == STATE_INCOHERENT_SLOW) {
                 set_coherent_state(bdb_state, hostinterned, STATE_INCOHERENT, __func__,
                                    __LINE__);
+                print_message = 1;
             }
             Pthread_mutex_unlock(&bdb_state->coherent_state_lock);
             last_slow_node_check_time = comdb2_time_epochms();
+            if (print_message) {
+                logmsg(LOGMSG_USER, "Set %s from INCOHERENT_SLOW to INCOHERENT on inactive timeout\n",
+                       hostinterned->str);
+            }
         }
         Pthread_mutex_unlock(&slow_node_check_lk);
     }
@@ -2648,7 +2716,7 @@ static void bdb_slow_replicant_check(bdb_state_type *bdb_state,
     int numnodes;
     struct interned_string *hosts[REPMAX];
     int print_message;
-    int made_incoherent_slow = 0;
+    int made_incoherent_slow = 0, mystate;
 
     numnodes =
         net_get_all_commissioned_nodes_interned(bdb_state->repinfo->netinfo, hosts);
@@ -2706,16 +2774,17 @@ static void bdb_slow_replicant_check(bdb_state_type *bdb_state,
                     h->last_downgrade_time = gettimeofday_ms();
                     made_incoherent_slow = 1;
                 }
+                mystate = h->coherent_state;
             }
         }
         Pthread_mutex_unlock(&(bdb_state->coherent_state_lock));
     }
 
     if (print_message) {
-        logmsg(LOGMSG_USER, "replication time for %s (%.2fms) is much worse than "
-                        "second-worst node %s (%.2fms)\n",
-                worst_node->str, worst_time, second_worst_node->str,
-                second_worst_time);
+        logmsg(LOGMSG_USER,
+               "replication time for %s (%.2fms) is much worse than "
+               "second-worst node %s (%.2fms) state is %s\n",
+               worst_node->str, worst_time, second_worst_node->str, second_worst_time, coherent_state_to_str(mystate));
     }
 
     /* TODO: if we ever disable make_slow_replicants_incoherent and have
@@ -2730,22 +2799,34 @@ static void bdb_slow_replicant_check(bdb_state_type *bdb_state,
             struct interned_string *host = hosts[i];
             struct hostinfo *h = retrieve_hostinfo(host);
             double avg = averager_avg(h->time_minute);
+            int print_stillslow = 0;
             print_message = 0;
 
             Pthread_mutex_lock(&(bdb_state->coherent_state_lock));
-            if (h->coherent_state == STATE_INCOHERENT_SLOW &&
-                (avg < (worst_time * bdb_state->attr->slowrep_incoherent_factor +
-                  bdb_state->attr->slowrep_incoherent_mintime))) {
-                print_message = 1;
-                set_coherent_state(bdb_state, host, STATE_INCOHERENT, __func__,
-                                   __LINE__);
+            if (h->coherent_state == STATE_INCOHERENT_SLOW) {
+                if (avg < (worst_time * bdb_state->attr->slowrep_incoherent_factor +
+                           bdb_state->attr->slowrep_incoherent_mintime)) {
+                    print_message = 1;
+                    set_coherent_state(bdb_state, host, STATE_INCOHERENT, __func__, __LINE__);
+                } else {
+                    print_stillslow = 1;
+                }
             }
             Pthread_mutex_unlock(&(bdb_state->coherent_state_lock));
-            if (print_message)
+            if (print_message) {
                 logmsg(LOGMSG_USER,
                        "replication time for %s (%.2fms) is within "
                        "bounds of second-worst node %s (%.2fms)\n",
                        host->str, avg, worst_node->str, worst_time);
+            }
+            if (print_stillslow) {
+                double window = worst_time * bdb_state->attr->slowrep_incoherent_factor +
+                                bdb_state->attr->slowrep_incoherent_mintime;
+                logmsg(LOGMSG_USER,
+                       "replication time for %s (%.2fms) still slow, greater than %.2fms "
+                       "the required threshold for second-worst node %s (%.2fms)\n",
+                       host->str, avg, window, worst_node->str, worst_time);
+            }
         }
     }
 }
@@ -3109,7 +3190,9 @@ static int bdb_wait_for_seqnum_from_all_int(bdb_state_type *bdb_state,
         bdb_state = bdb_state->parent;
 
     /* Dereference from parent */
-    durable_lsns = (bdb_state->attr->durable_lsns || gbl_replicant_retry_on_not_durable);
+    durable_lsns = (bdb_state->attr->durable_lsns || gbl_replicant_retry_on_not_durable || gbl_2pc);
+
+    /* 2pc won't allow participants to commit until coordinator-commit is durable */
     catchup_window = bdb_state->attr->catchup_window;
 
     /* short ciruit if we are waiting on lsn 0:0  */
@@ -3416,6 +3499,7 @@ done_wait:
                             __func__, __LINE__);
                     abort();
                 }
+                Pthread_cond_broadcast(&bdb_state->durable_lsn_cd);
                 Pthread_mutex_unlock(&bdb_state->durable_lsn_lk);
                 durable_count++;
                 was_durable = 1;
@@ -5252,6 +5336,8 @@ extern int gbl_dump_sql_on_repwait_sec;
 extern int gbl_lock_get_list_start;
 int bdb_clean_pglogs_queues(bdb_state_type *bdb_state, DB_LSN lsn,
                             int truncate);
+extern int gbl_2pc;
+void disttxn_timer(void);
 
 int request_delaymore(void *bdb_state_in)
 {
@@ -5460,18 +5546,15 @@ void *watcher_thread(void *arg)
             if (num_skipped >= bdb_state->attr->toomanyskipped) {
                 /* too many guys being skipped, let's take drastic measures!
                  * delay ourselves */
-                if (bdb_state->attr->commitdelay <
-                    bdb_state->attr->skipdelaybase) {
-                    bdb_state->attr->commitdelay =
-                        bdb_state->attr->skipdelaybase;
+                if (bdb_state->attr->commitdelay < bdb_state->attr->skipdelaybase) {
+                    bdb_state->attr->commitdelay = bdb_state->attr->skipdelaybase;
                     if (bdb_state->attr->commitdelay > bdb_state->attr->commitdelaymax)
                         bdb_state->attr->commitdelay = bdb_state->attr->commitdelaymax;
                     if (gbl_commit_delay_trace) {
                         logmsg(LOGMSG_USER,
                                "%s line %d setting commitdelay to "
                                "skipdelaybase %d\n",
-                               __func__, __LINE__,
-                               bdb_state->attr->skipdelaybase);
+                               __func__, __LINE__, bdb_state->attr->skipdelaybase);
                     }
                 }
             }
@@ -5487,12 +5570,16 @@ void *watcher_thread(void *arg)
                 }
                 Pthread_mutex_unlock(&(bdb_state->seqnum_info->lock));
             }
+
+            extern int gbl_ready;
+            if (gbl_2pc && gbl_ready) {
+                disttxn_timer();
+            }
         }
 
         net_timeout_watchlist(bdb_state->repinfo->netinfo);
 
-        if ((bdb_state->passed_dbenv_open) &&
-            (bdb_state->repinfo->rep_process_message_start_time)) {
+        if ((bdb_state->passed_dbenv_open) && (bdb_state->repinfo->rep_process_message_start_time)) {
             if (comdb2_time_epoch() - bdb_state->repinfo->rep_process_message_start_time > 10) {
                 logmsg(LOGMSG_WARN, "rep_process_message running for 10 seconds, dumping thread pool to trc.c\n");
                 gbl_logmsg_ctrace = 1;
@@ -5500,7 +5587,8 @@ void *watcher_thread(void *arg)
                 gbl_logmsg_ctrace = 0;
                 bdb_state->repinfo->rep_process_message_start_time = 0;
             }
-            if ((comdb2_time_epoch() - bdb_state->repinfo->rep_process_message_start_time) > gbl_dump_sql_on_repwait_sec) {
+            if ((comdb2_time_epoch() - bdb_state->repinfo->rep_process_message_start_time) >
+                gbl_dump_sql_on_repwait_sec) {
                 comdb2_dump_blockers(bdb_state->dbenv);
             }
         }

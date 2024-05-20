@@ -400,6 +400,7 @@ int sp_column_val(struct response_data *, int, int, void *);
 void *sp_column_ptr(struct response_data *, int, int, size_t *);
 
 typedef int(plugin_func)(struct sqlclntstate *);
+typedef const char *(api_type_func)(struct sqlclntstate *);
 typedef int(response_func)(struct sqlclntstate *, int, void *, int);
 typedef void *(replay_func)(struct sqlclntstate *, void *);
 typedef int(param_index_func)(struct sqlclntstate *, const char *, int64_t *);
@@ -470,6 +471,7 @@ struct plugin_callbacks {
     plugin_func *peer_check; /* newsql_peer_check_evbuffer */
     auth_func *get_authdata; /* newsql_get_authdata */
     override_type_func *set_timeout; /* newsql_set_timeout_sbuf */
+    api_type_func *api_type; /* newsql_api_type */
 
     /* Optional */
     void *state;
@@ -536,6 +538,7 @@ struct plugin_callbacks {
         make_plugin_callback(clnt, name, peer_check);                          \
         make_plugin_callback(clnt, name, get_authdata);                        \
         make_plugin_callback(clnt, name, set_timeout);                         \
+        make_plugin_callback(clnt, name, api_type);                            \
         make_plugin_optional_null(clnt, count);                                \
         make_plugin_optional_null(clnt, type);                                 \
         make_plugin_optional_null(clnt, int64);                                \
@@ -629,6 +632,9 @@ struct string_ref;
 
 struct session_tbl;
 void clear_session_tbls(struct sqlclntstate *);
+
+void clear_participants(struct sqlclntstate *);
+int add_participant(struct sqlclntstate *, const char *dbname, const char *tier);
 
 /* Client specific sql state */
 struct sqlclntstate {
@@ -939,6 +945,19 @@ struct sqlclntstate {
 
     int lastresptype;
     char *externalAuthUser;
+
+    // fdb 2pc
+    int use_2pc;
+    int is_participant;
+    int is_coordinator;
+
+    char *dist_txnid;
+    char *coordinator_dbname;
+    char *coordinator_tier;
+    char *coordinator_master;
+
+    // coordinator participant information
+    LISTC_T(struct participant) participants;
 };
 
 /* Query stats. */
@@ -1313,8 +1332,7 @@ int handle_fdb_push(struct sqlclntstate *clnt, struct errstat *err);
 int sqlite3LockStmtTables(sqlite3_stmt *pStmt);
 int sqlite3UnlockStmtTablesRemotes(struct sqlclntstate *clnt);
 void sql_remote_schema_changed(struct sqlclntstate *clnt, sqlite3_stmt *pStmt);
-int release_locks_on_emit_row(struct sqlthdstate *thd,
-                              struct sqlclntstate *clnt);
+int release_locks_on_emit_row(struct sqlclntstate *clnt);
 
 void clearClientSideRow(struct sqlclntstate *clnt);
 void comdb2_set_tmptbl_lk(pthread_mutex_t *);

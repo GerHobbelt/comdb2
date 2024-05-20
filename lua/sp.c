@@ -5146,6 +5146,24 @@ static void add_trigger_funcs(Lua L)
     lua_pop(L, 1);
 }
 
+static void add_emit(Lua L)
+{
+    luaL_getmetatable(L, dbtypes.db);
+    lua_pushcfunction(L, db_emit);
+    lua_setfield(L, -2, "emit");
+    lua_pop(L, 1);
+
+    luaL_getmetatable(L, dbtypes.dbstmt);
+    lua_pushcfunction(L, dbstmt_emit);
+    lua_setfield(L, -2, "emit");
+    lua_pop(L, 1);
+
+    luaL_getmetatable(L, dbtypes.dbtable);
+    lua_pushcfunction(L, dbtable_emit);
+    lua_setfield(L, -2, "emit");
+    lua_pop(L, 1);
+}
+
 static void remove_emit(Lua L)
 {
     luaL_getmetatable(L, dbtypes.db);
@@ -5713,7 +5731,7 @@ static int l_send_back_row(Lua lua, sqlite3_stmt *stmt, int nargs)
         return luabb_error(lua, sp, "attempt to read %d cols (maxcols:%d)",
                            nargs, MAXCOLUMNS);
     }
-    rc = release_locks_on_emit_row(sp->thd, sp->clnt);
+    rc = release_locks_on_emit_row(sp->clnt);
     if (rc) {
         logmsg(LOGMSG_ERROR, "%s release_locks_on_emit_row %d\n", __func__, rc);
         return rc;
@@ -7145,6 +7163,7 @@ static int exec_procedure_int(struct sqlthdstate *thd,
         }
         unlock_schema_lk();
         if (consumer) add_consumer_funcs(L);
+        add_emit(L);
         update_tran_funcs(L, clnt);
     }
 

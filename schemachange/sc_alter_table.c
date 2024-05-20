@@ -522,7 +522,7 @@ int do_alter_table(struct ireq *iq, struct schema_change_type *s,
      * truncated prefix anyway */
     bdb_get_new_prefix(new_prefix, sizeof(new_prefix), &bdberr);
 
-    rc = open_temp_db_resume(newdb, new_prefix, s->resume, 0, tran);
+    rc = open_temp_db_resume(iq, newdb, new_prefix, s->resume, 0, tran);
     if (rc) {
         /* todo: clean up db */
         sc_errf(s, "failed opening new db\n");
@@ -596,7 +596,7 @@ convert_records:
     assert(db->sc_from == db && s->db == db);
     assert(db->sc_to == newdb && s->newdb == newdb);
     assert(db->doing_conversion == 1);
-    if (s->resume && IS_ALTERTABLE(s) && !s->finalize_only) {
+    if (s->resume && IS_ALTERTABLE(s)) {
         if (gbl_test_sc_resume_race && !get_stopsc(__func__, __LINE__)) {
             logmsg(LOGMSG_INFO, "%s:%d sleeping 5s for sc_resume test\n",
                    __func__, __LINE__);

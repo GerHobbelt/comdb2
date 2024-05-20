@@ -544,7 +544,7 @@ int add_record(struct ireq *iq, void *trans, const uint8_t *p_buf_tag_name,
          */
 
         if (has_constraint(flags)) {
-            if (!is_event_from_sc(flags)) {
+            if (!is_event_from_sc(flags) && !(flags & RECFLAGS_INLINE_CONSTRAINTS)) {
                 /* enqueue the add of the key for constraint checking purpose */
                 rc = insert_add_op(iq, opcode, *rrn, -1, *genid, ins_keys,
                                    blkpos, rec_flags);
@@ -562,7 +562,7 @@ int add_record(struct ireq *iq, void *trans, const uint8_t *p_buf_tag_name,
             }
         }
 
-        if (!has_constraint(flags) || (rec_flags & OSQL_IGNORE_FAILURE) ||
+        if (!has_constraint(flags) || (flags & RECFLAGS_INLINE_CONSTRAINTS) || (rec_flags & OSQL_IGNORE_FAILURE) ||
             reorder) {
             retrc = add_record_indices(iq, trans, blobs, maxblobs, opfailcode, ixfailnum, rrn, genid, vgenid, ins_keys,
                                        opcode, blkpos, od_dta, od_len, flags, reorder);
@@ -1089,8 +1089,8 @@ int upd_record(struct ireq *iq, void *trans, void *primkey, int rrn,
         if (strncasecmp(tag, ".ONDISK", 7) == 0) {
             /* the input record is .ONDISK or a .ONDISK_IX_ (which would be the
              * case for a cascaded update) */
-            rc = stag_to_stag_buf_update_tz(dbname_schema, get_schema(iq->usedb, -1), vrecord, odv_dta, NULL,
-                                            iq->tzname);
+            rc = stag_to_stag_buf_update_tz(iq->usedb, dbname_schema, get_schema(iq->usedb, -1),
+                                            vrecord, odv_dta, NULL, iq->tzname);
         } else {
             rc = ctag_to_stag_buf_tz(iq->usedb, tag, vrecord,
                                      WHOLE_BUFFER, fldnullmap, ".ONDISK",
@@ -1137,8 +1137,8 @@ int upd_record(struct ireq *iq, void *trans, void *primkey, int rrn,
         if (strncasecmp(tag, ".ONDISK", 7) == 0) {
             /* the input record is .ONDISK or a .ONDISK_IX_ (which would be the
              * case for a cascaded update) */
-            rc = stag_to_stag_buf_update_tz(dbname_schema, get_schema(iq->usedb, -1), record, od_dta, &reason,
-                                            iq->tzname);
+            rc = stag_to_stag_buf_update_tz(iq->usedb, dbname_schema, get_schema(iq->usedb, -1),
+                                            record, od_dta, &reason, iq->tzname);
         } else {
             rc = ctag_to_stag_blobs_tz(iq->usedb, tag, record,
                                        WHOLE_BUFFER, fldnullmap, ".ONDISK",
@@ -1195,9 +1195,9 @@ int upd_record(struct ireq *iq, void *trans, void *primkey, int rrn,
                     retrc = ERR_INTERNAL;
                 goto err;
             }
-            blob_status_to_blob_buffer(&oldblobs, del_blobs_buf);
-            blob_status_to_blob_buffer(&oldblobs, add_blobs_buf);
         }
+        blob_status_to_blob_buffer(&oldblobs, del_blobs_buf);
+        blob_status_to_blob_buffer(&oldblobs, add_blobs_buf);
         for (blobno = 0;
              blobno < maxblobs && blobno < iq->usedb->schema->numblobs;
              blobno++) {
