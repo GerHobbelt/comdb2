@@ -149,6 +149,7 @@ extern int gbl_all_prepare_abort;
 extern int gbl_all_prepare_leak;
 extern int gbl_flush_on_prepare;
 extern int gbl_abort_on_unset_ha_flag;
+extern int gbl_abort_on_unfound_txn;
 extern int gbl_write_dummy_trace;
 extern int gbl_abort_on_incorrect_upgrade;
 extern int gbl_poll_in_pg_free_recover;
@@ -417,6 +418,7 @@ extern int gbl_fdb_incoherence_percentage;
 extern int gbl_fdb_io_error_retries;
 extern int gbl_fdb_io_error_retries_phase_1;
 extern int gbl_fdb_io_error_retries_phase_2_poll;
+extern int gbl_debug_invalid_genid;
 
 /* Physical replication */
 extern int gbl_blocking_physrep;
@@ -477,6 +479,7 @@ extern int gbl_timer_warn_interval;
 
 int gbl_incoherent_clnt_wait = 0;
 int gbl_new_leader_duration = 3;
+extern int gbl_transaction_grace_period;
 
 /*
   =========================================================

@@ -118,6 +118,7 @@ extern struct interned_string *gbl_myhostname_interned;
 extern size_t gbl_blobmem_cap;
 extern int gbl_backup_logfiles;
 extern int gbl_commit_lsn_map;
+struct timeval last_timer_pstack;
 
 #define FILENAMELEN 100
 
@@ -487,6 +488,21 @@ const char *bdb_get_tmpdir(bdb_state_type *bdb_state)
         bdb_state = bdb_state->parent;
 
     return bdb_state->tmpdir;
+}
+
+void bdb_replace_cached_data_version(bdb_state_type *target, bdb_state_type *new)
+{
+    target->dtavers[0] = new->dtavers[0];
+}
+
+void bdb_replace_cached_blob_version(bdb_state_type *target, int targetnum, bdb_state_type *new, int newnum)
+{
+    target->dtavers[targetnum + 1] = new->dtavers[newnum + 1];
+}
+
+void bdb_replace_cached_index_version(bdb_state_type *target, int targetnum, bdb_state_type *new, int newnum)
+{
+    target->ixvers[targetnum] = new->ixvers[newnum];
 }
 
 /* takes information about a file and constructs its filename, returns bytes
@@ -2215,6 +2231,7 @@ void pstack_self(void)
     gbl_logmsg_ctrace = old;
     fclose(out);
     unlink(output);
+    gettimeofday(&last_timer_pstack, NULL);
 }
 
 static void panic_func(DB_ENV *dbenv, int errval)

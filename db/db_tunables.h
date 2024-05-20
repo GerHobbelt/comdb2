@@ -277,6 +277,8 @@ REGISTER_TUNABLE("disallow_portmux_route", "Disables 'allow_portmux_route'",
                  TUNABLE_BOOLEAN, &gbl_pmux_route_enabled,
                  INVERSE_VALUE | READONLY | NOARG | READEARLY, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("abort_on_unfound_txn", "Abort if we cannot find a txn for a thread.  (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_abort_on_unfound_txn, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("dont_abort_on_in_use_rqid", "Disable 'abort_on_in_use_rqid'",
                  TUNABLE_BOOLEAN, &gbl_abort_on_clear_inuse_rqid,
                  INVERSE_VALUE | READONLY | NOARG, NULL, NULL, NULL, NULL);
@@ -1352,6 +1354,10 @@ REGISTER_TUNABLE("debug.txn_sleep",
                  "Sleep during a transaction to test transaction state systable", TUNABLE_INTEGER,
                  &gbl_debug_txn_sleep, INTERNAL, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("debug.invalid_genid",
+                 "Deliberately introduce an invalid genid, FOR TESTING PURPOSE (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_debug_invalid_genid,
+                 NOARG | EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE(
     "query_plan_percentage",
     "Alarm if the average cost per row of current query plan is n percent above the cost for different query plan."
@@ -1988,7 +1994,7 @@ REGISTER_TUNABLE("skip_catchup_logic",
                  &gbl_skip_catchup_logic, EXPERIMENTAL | INTERNAL, NULL, NULL,
                  NULL, NULL);
 
-REGISTER_TUNABLE("protobuf_connectmsg", "Use protobuf in net library for the connect message. (Default: off)",
+REGISTER_TUNABLE("protobuf_connectmsg", "Use protobuf in net library for the connect message. (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_pb_connectmsg, 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("libevent", "Use libevent in net library. (Default: on)",
@@ -2486,5 +2492,10 @@ REGISTER_TUNABLE("timer_pstack_interval", "Skip pstack if last one was within sp
 
 REGISTER_TUNABLE("timer_warn_interval", "Flag timer thds which tick longer than specified interval in msec. To disable, set to 0 (Default: 1500ms)",
                  TUNABLE_INTEGER, &gbl_timer_warn_interval, INTERNAL, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("transaction_grace_period",
+                 "Time to wait for connections with pending transactions to go away on exit. (Default: 60)",
+                 TUNABLE_INTEGER, &gbl_transaction_grace_period, 0, NULL, NULL, NULL, NULL);
+
 
 #endif /* _DB_TUNABLES_H */
