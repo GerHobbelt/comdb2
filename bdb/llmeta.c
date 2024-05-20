@@ -2946,6 +2946,11 @@ int bdb_add_dummy_llmeta_wait(int wait_for_seqnum)
     int retries = gbl_maxretries;
     uint8_t key[LLMETA_IXLEN] = {0};
 
+    if (llmeta_bdb_state == NULL) {
+        logmsg(LOGMSG_ERROR, "%s got add_dummy request while opening backend.\n", __func__);
+        return -1;
+    }
+
 retry:
     if (bdb_lock_desired(llmeta_bdb_state->parent)) {
         logmsg(LOGMSG_ERROR, "%s short-circuiting because bdb_lock_desired\n",
@@ -4292,7 +4297,6 @@ int bdb_llmeta_get_sc_history(tran_type *t, sc_hist_row **hist_out, int *num,
     void **keys = NULL;
     int nkey = 0, rc = 1;
     sc_hist_row *hist = NULL;
-    void **sc_data = NULL;
 
     *num = 0;
     *hist_out = NULL;
@@ -4319,14 +4323,6 @@ int bdb_llmeta_get_sc_history(tran_type *t, sc_hist_row **hist_out, int *num,
     hist = calloc(nkey, sizeof(sc_hist_row) * nkey);
     if (hist == NULL) {
         logmsg(LOGMSG_ERROR, "%s: failed malloc\n", __func__);
-        *bdberr = BDBERR_MALLOC;
-        return -1;
-    }
-
-    sc_data = calloc(nkey, sizeof(void *));
-    if (sc_data == NULL) {
-        logmsg(LOGMSG_ERROR, "%s: failed malloc\n", __func__);
-        free(hist);
         *bdberr = BDBERR_MALLOC;
         return -1;
     }

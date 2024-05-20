@@ -3394,7 +3394,6 @@ int recover_deadlock_flags(bdb_state_type *, struct sqlclntstate *,
 int pause_pagelock_cursors(void *arg);
 int count_pagelock_cursors(void *arg);
 int compare_indexes(const char *table, FILE *out);
-void freeschema(struct schema *schema);
 void freedb(dbtable *db);
 
 extern int gbl_parallel_recovery_threads;
@@ -3419,7 +3418,6 @@ extern int gbl_report_sqlite_numeric_conversion_errors;
 extern int dfp_conv_check_status(void *pctx, char *from, char *to);
 
 void fix_constraint_pointers(dbtable *db, dbtable *newdb);
-struct schema *create_version_schema(char *csc2, int version, struct dbenv *);
 void set_odh_options(dbtable *);
 void set_odh_options_tran(dbtable *db, tran_type *tran);
 void transfer_db_settings(dbtable *olddb, dbtable *newdb);
@@ -3652,7 +3650,6 @@ extern int gbl_throttle_txn_chunks_msec;
 extern int gbl_sql_release_locks_on_slow_reader;
 extern int gbl_fail_client_write_lock;
 extern int gbl_server_admin_mode;
-extern int gbl_always_load_preupd_blobs;
 
 void csc2_free_all(void);
 

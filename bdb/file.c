@@ -7346,7 +7346,15 @@ uint64_t bdb_data_size(bdb_state_type *bdb_state, int dtanum)
 
     for (stripenum = 0; stripenum < numstripes; stripenum++) {
         char bdbname[PATH_MAX], physname[PATH_MAX];
-        form_file_name_ex(bdb_state, 1, dtanum, 1, 1, stripenum, bdb_state->dtavers[dtanum], bdbname, sizeof(bdbname));
+
+        /* check for stripe-ness. non-stripe won't have the s[n] suffix */
+        int isstriped = 0;
+        if (dtanum > 0 && bdb_state->attr->blobstripe > 0)
+            isstriped = 1;
+        else if (dtanum == 0 && bdb_state->bdbtype == BDBTYPE_TABLE && bdb_state->attr->dtastripe > 0)
+            isstriped = 1;
+
+        form_file_name_ex(bdb_state, 1, dtanum, 1, isstriped, stripenum, bdb_state->dtavers[dtanum], bdbname, sizeof(bdbname));
         bdb_trans(bdbname, physname);
         total += mystat(physname);
     }
@@ -8152,6 +8160,34 @@ static inline void init_version_num(unsigned long long *version_num, int sz) {
         version_num[i] = -1;
 }
 
+static char *owner = NULL;
+static pthread_mutex_t owner_mtx = PTHREAD_MUTEX_INITIALIZER;
+
+/*
+ * The check is to prevent the following race condition.
+ *
+ * Suppose an alter-table operation is in its final step which is to delete the table's old files,
+ * where it needs to access the table's bdb state:
+ *     ALTER TABLE t -> do_ddl() -> osql_scdone_commit_callback() -> bdb_process_unused_files()
+ *
+ * A drop-table operation comes in after the alter-table has committed, but manages to complete
+ * before the alter-table finishes deleting files.
+ *     DROP TABLE t -> do_ddl() -> osql_scdone_commit_callback() -> bdb_free()
+ *
+ * If the drop-table freed the bdb state, the alter-table would segfault.
+ *
+ * delfiles can be in progress after this check. However it won't be an issue for the delfiles cannot
+ * possibly run against the table we just dropped.
+ */
+int bdb_is_delfiles_in_progress()
+{
+    int rc;
+    Pthread_mutex_lock(&owner_mtx);
+    rc = (owner != NULL);
+    Pthread_mutex_unlock(&owner_mtx);
+    return rc;
+}
+
 /* given an existing table pointed by bdb_state, check the disk for older
    versions of it
    (i.e. not matching current metadata versioning information), and queue those
@@ -8165,8 +8201,6 @@ static int bdb_process_unused_files(bdb_state_type *bdb_state, tran_type *tran,
 {
     int spew_debug =
         bdb_attr_get(bdb_state->attr, BDB_ATTR_DELETE_OLD_FILE_DEBUG);
-    static char *owner = NULL;
-    static pthread_mutex_t owner_mtx = PTHREAD_MUTEX_INITIALIZER;
     const char blob_ext[] = ".blob";
     const char data_ext[] = ".data";
     const char index_ext[] = ".index";

@@ -222,7 +222,6 @@ struct schema_change_type {
     int use_new_genids;   /* rebuilding old genids needs to
                              get new genids to avoid name collission */
     int finalize;      /* Whether the schema change should be committed */
-    int finalize_only; /* only commit the schema change */
 
     pthread_mutex_t mtx; /* mutex for thread sync */
     pthread_mutex_t mtxStart; /* mutex for thread start */
@@ -477,5 +476,7 @@ int comdb2_is_user_op(char *user, char *password);
 int llog_scdone_rename_wrapper(bdb_state_type *bdb_state,
                                struct schema_change_type *s, tran_type *tran,
                                int *bdberr);
+
+const char *schema_change_kind(struct schema_change_type *s);
 
 #endif

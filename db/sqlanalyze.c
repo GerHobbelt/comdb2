@@ -826,8 +826,11 @@ static int analyze_table_int(table_descriptor_t *td,
     if (sampled_tables_enabled)
         get_sampling_threshold(td->table, &sampling_threshold);
 
-    /* sample if enabled & large */
-    if (sampled_tables_enabled && totsiz > sampling_threshold) {
+    /* sample if enabled */
+    if (sampled_tables_enabled) {
+        if (totsiz <= sampling_threshold) {
+            td->scale = 100;
+        }
         logmsg(LOGMSG_INFO, "Sampling table '%s' at %d%% coverage\n", td->table, td->scale);
         sampled_table = 1;
         rc = sample_indicies(td, &clnt, tbl, td->scale, td->sb);
@@ -1110,6 +1113,10 @@ int analyze_table(char *table, SBUF2 *sb, int scale, int override_llmeta,
     }
     td.current_user.bypass_auth = bypass_auth;
 
+    if (sampled_tables_enabled) {
+        flush_db();
+    }
+
     /* dispatch */
     int rc = dispatch_table_thread(&td);
 
@@ -1156,6 +1163,10 @@ int analyze_database(SBUF2 *sb, int scale, int override_llmeta)
 
     struct sql_thread *thd = pthread_getspecific(query_info_key);
     struct sqlclntstate *clnt = (thd) ? thd->clnt : NULL;
+
+    if (sampled_tables_enabled) {
+        flush_db();
+    }
 
     /* start analyzing each table */
     for (i = 0; i < thedb->num_dbs; i++) {
