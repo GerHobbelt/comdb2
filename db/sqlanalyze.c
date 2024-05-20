@@ -1090,7 +1090,7 @@ int analyze_table(char *table, SBUF2 *sb, int scale, int override_llmeta,
     }
 
     if (set_analyze_running(sb))
-        return -1;
+        return SQLITE_ANALYZE_ALREADY_RUNNING;
 
     table_descriptor_t td = {0};
     /* initialize table sync structure */
@@ -1149,10 +1149,13 @@ int analyze_database(SBUF2 *sb, int scale, int override_llmeta)
         return -1;
 
     if (set_analyze_running(sb))
-        return -1;
+        return SQLITE_ANALYZE_ALREADY_RUNNING;
 
     /* allocate descriptor */
     td = calloc(thedb->num_dbs, sizeof(table_descriptor_t));
+
+    struct sql_thread *thd = pthread_getspecific(query_info_key);
+    struct sqlclntstate *clnt = (thd) ? thd->clnt : NULL;
 
     /* start analyzing each table */
     for (i = 0; i < thedb->num_dbs; i++) {
@@ -1168,6 +1171,12 @@ int analyze_database(SBUF2 *sb, int scale, int override_llmeta)
         td[idx].override_llmeta = override_llmeta;
         strncpy0(td[idx].table, thedb->dbs[i]->tablename,
                  sizeof(td[idx].table));
+
+        if (clnt) {
+            td[idx].current_user = clnt->current_user;
+            td[idx].appdata      = clnt->appdata;
+            td[idx].get_authdata = clnt->plugin.get_authdata;
+        }
 
         /* dispatch analyze table thread */
         rc = dispatch_table_thread(&td[idx]);

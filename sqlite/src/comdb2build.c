@@ -1596,13 +1596,16 @@ void comdb2bulkimport(Parse* pParse, Token* nm,Token* lnm, Token* nm2, Token* ln
 
 int comdb2vdbeAnalyze(OpFunc *f)
 {
-    if ((f->rc = do_analyze(f->arg, f->int_arg)) != SQLITE_OK)
+    f->rc = do_analyze(f->arg, f->int_arg);
+    if (f->rc == SQLITE_ANALYZE_ALREADY_RUNNING)
+        f->errorMsg = "Analyze could not run because it is already running on some table";
+    else if (f->rc != SQLITE_OK)
         f->errorMsg = "Analyze could not run because of internal problems";
     return f->rc;
 }
 
 
-void comdb2analyze(Parse* pParse, int opt, Token* nm, Token* lnm, int pc)
+void comdb2analyze(Parse* pParse, int opt, Token* nm, Token* lnm, int pc, int only_leader)
 {
     if (comdb2IsPrepareOnly(pParse))
         return;
@@ -1618,6 +1621,12 @@ void comdb2analyze(Parse* pParse, int opt, Token* nm, Token* lnm, int pc)
 
     if (comdb2AuthenticateUserOp(pParse))
         return;
+
+    bdb_state_type *bdb_state = thedb->bdb_env;
+    if (only_leader && !bdb_amimaster(bdb_state)) {
+        setError(pParse, SQLITE_ERROR, "Should only run exclusive_analyze on leader node");
+        return;
+    }
 
     Vdbe *v  = sqlite3GetVdbe(pParse);
     int threads = GET_ANALYZE_THREAD(opt);

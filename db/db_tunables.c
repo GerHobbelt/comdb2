@@ -110,6 +110,7 @@ extern int gbl_replicant_latches;
 extern int gbl_return_long_column_names;
 extern int gbl_round_robin_stripes;
 extern int skip_clear_queue_extents;
+extern int gbl_rep_skip_recovery;
 extern int gbl_slow_rep_process_txn_freq;
 extern int gbl_slow_rep_process_txn_minms;
 extern int gbl_slow_rep_process_txn_maxms;
@@ -470,6 +471,9 @@ extern int gbl_pstack_self;
 
 /* For fdb connections using cdb2api */
 extern char *gbl_cdb2api_policy_override;
+
+extern int gbl_timer_pstack_interval;
+extern int gbl_timer_warn_interval;
 
 int gbl_incoherent_clnt_wait = 0;
 int gbl_new_leader_duration = 3;

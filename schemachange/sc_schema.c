@@ -24,6 +24,7 @@
 #include "intern_strings.h"
 #include "views.h"
 #include "logmsg.h"
+#include "comdb2_atomic.h"
 
 extern int gbl_partial_indexes;
 extern uint64_t gbl_sc_headroom;
@@ -391,11 +392,11 @@ int mark_schemachange_over_tran(const char *table, tran_type *tran)
                                  0 /*schema_change_data_len*/, &bdberr) ||
         bdberr != BDBERR_NOERROR) {
         logmsg(LOGMSG_WARN,
-               "POSSIBLY RESUMABLE: Could not mark schema change "
+               "POSSIBLY RESUMABLE: bdberr %d Could not mark schema change "
                "done in the low level meta table.  This usually means "
                "that the schema change failed in a potentially "
                "resumable way (ie there is a new master) if this is "
-               "the case, the new master will try to resume\n");
+               "the case, the new master will try to resume\n", bdberr);
 
         return SC_BDB_ERROR;
     }
@@ -452,9 +453,9 @@ int prepare_table_version_one(tran_type *tran, struct dbtable *db,
     rc = get_csc2_file_tran(db->tablename, -1, &ondisk_text, NULL, tran);
     if (rc) {
         logmsg(LOGMSG_FATAL,
-               "Couldn't get latest csc2 from llmeta for %s! PANIC!!\n",
-               db->tablename);
-        exit(1);
+               "Couldn't get latest csc2 from llmeta for %s rc %d\n",
+               db->tablename, rc);
+        return -1;
     }
 
     /* db's version has been reset */
@@ -465,28 +466,28 @@ int prepare_table_version_one(tran_type *tran, struct dbtable *db,
     rc = bdb_new_csc2(tran, db->tablename, 1, ondisk_text, &bdberr);
     free(ondisk_text);
     if (rc != 0) {
-        logmsg(LOGMSG_FATAL, "Couldn't save in llmeta! PANIC!!");
-        exit(1);
+        logmsg(LOGMSG_FATAL, "Couldn't save in llmeta rc %d\n", rc);
+        return -1;
     }
 
     ondisk_schema = find_tag_schema(db, ".ONDISK");
     if (NULL == ondisk_schema) {
         logmsg(LOGMSG_FATAL, ".ONDISK not found in %s! PANIC!!\n",
                db->tablename);
-        exit(1);
+        abort();
     }
     ver_one = clone_schema(ondisk_schema);
     if (ver_one == NULL) {
         logmsg(LOGMSG_FATAL, "clone schema failed %s @ %d\n", __func__,
                __LINE__);
-        exit(1);
+        abort();
     }
     sprintf(tag, "%s1", gbl_ondisk_ver);
     free(ver_one->tag);
     ver_one->tag = strdup(tag);
     if (ver_one->tag == NULL) {
         logmsg(LOGMSG_FATAL, "strdup failed %s @ %d\n", __func__, __LINE__);
-        exit(1);
+        abort();
     }
     *version = ver_one;
 
@@ -1055,7 +1056,7 @@ void transfer_db_settings(struct dbtable *olddb, struct dbtable *newdb)
     memcpy(newdb->write_count, olddb->write_count, sizeof(olddb->write_count));
     memcpy(newdb->saved_write_count, olddb->saved_write_count,
            sizeof(olddb->saved_write_count));
-    newdb->aa_lastepoch = olddb->aa_lastepoch;
+    XCHANGE64(newdb->aa_lastepoch, olddb->aa_lastepoch);
 }
 
 /* use callers transaction if any, need to do I/O */

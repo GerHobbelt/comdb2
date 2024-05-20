@@ -81,11 +81,11 @@
 (tablename='t3', bytes=73728)
 (tablename='t4', bytes=73728)
 [select * from comdb2_tablesizes order by tablename] rc 0
-(KEYWORDS_COUNT=221)
+(KEYWORDS_COUNT=222)
 [SELECT COUNT(*) AS KEYWORDS_COUNT FROM comdb2_keywords] rc 0
 (RESERVED_KW=66)
 [SELECT COUNT(*) AS RESERVED_KW FROM comdb2_keywords WHERE reserved = 'Y'] rc 0
-(NONRESERVED_KW=155)
+(NONRESERVED_KW=156)
 [SELECT COUNT(*) AS NONRESERVED_KW FROM comdb2_keywords WHERE reserved = 'N'] rc 0
 (name='ALL', reserved='Y')
 (name='ALTER', reserved='Y')
@@ -206,6 +206,7 @@
 (name='END', reserved='N')
 (name='EXCLUDE', reserved='N')
 (name='EXCLUSIVE', reserved='N')
+(name='EXCLUSIVE_ANALYZE', reserved='N')
 (name='EXEC', reserved='N')
 (name='EXECUTE', reserved='N')
 (name='EXPLAIN', reserved='N')
@@ -361,6 +362,7 @@
 [SELECT type FROM comdb2_temporary_file_sizes ORDER BY type] rc 0
 (name='comdb2_active_osqls')
 (name='comdb2_appsock_handlers')
+(name='comdb2_auto_analyze_tables')
 (name='comdb2_blkseq')
 (name='comdb2_clientstats')
 (name='comdb2_cluster')
@@ -371,6 +373,7 @@
 (name='comdb2_cron_events')
 (name='comdb2_cron_schedulers')
 (name='comdb2_fdb_info')
+(name='comdb2_files')
 (name='comdb2_fingerprints')
 (name='comdb2_functions')
 (name='comdb2_index_usage')

@@ -169,6 +169,8 @@ int comdb2SystblInit(
   if (rc == SQLITE_OK)
     rc = systblTablePropertiesInit(db);
   if (rc == SQLITE_OK)
+    rc = sqlite3_create_module(db, "comdb2_files", &systblFilesModule, 0);
+  if (rc == SQLITE_OK)
     rc = systblTimepartInit(db);
   if (rc == SQLITE_OK)
     rc = systblCronInit(db);
@@ -210,6 +212,8 @@ int comdb2SystblInit(
     rc = systblFunctionsInit(db);
   if (rc == SQLITE_OK)
     rc = systblTablePermissionsInit(db);
+  if (rc == SQLITE_OK)
+    rc = systblAutoAnalyzeTablesInit(db);
   if (rc == SQLITE_OK)
     rc = systblSystabPermissionsInit(db);
   if (rc == SQLITE_OK)

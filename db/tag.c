@@ -4534,21 +4534,12 @@ void fix_lrl_ixlen_tran(tran_type *tran)
             db->csc2_schema = NULL;
         }
 
-        if (bdb_have_llmeta()) {
-            int ver;
-            ver = get_csc2_version_tran(db->tablename, tran);
-            if (ver > 0) {
-                get_csc2_file_tran(db->tablename, ver, &db->csc2_schema,
-                                   &db->csc2_schema_len, tran);
-            }
-        } else {
-            if (!db->csc2_schema)  
-                db->csc2_schema = load_text_file(db->lrlfname);
-            if (db->csc2_schema)
-                db->csc2_schema_len = strlen(db->csc2_schema);
+        int ver = get_csc2_version_tran(db->tablename, tran);
+        if (ver > 0) {
+            get_csc2_file_tran(db->tablename, ver, &db->csc2_schema,
+                    &db->csc2_schema_len, tran);
         }
     }
-    /* TODO: schema information for foreign tables */
 }
 
 void fix_lrl_ixlen()
@@ -6157,25 +6148,29 @@ static void clear_existing_schemas(dbtable *db)
     del_tag_schema(db->tablename, ".ONDISK");
 }
 
-static int load_new_versions(dbtable *db, tran_type *tran)
+/* this populates global schema hash (i.e. tags) for a table 
+ * all versions of the schema are loaded
+ */
+int load_csc2_versions(dbtable *tbl, tran_type *tran)
 {
     int isc;
-    get_db_instant_schema_change_tran(db, &isc, tran);
+    get_db_instant_schema_change_tran(tbl, &isc, tran);
     if (!isc)
         return 0;
 
     int i;
-    int version = get_csc2_version_tran(db->tablename, tran);
+    int version = get_csc2_version_tran(tbl->tablename, tran);
     for (i = 1; i <= version; ++i) {
         char *csc2;
         int len;
-        get_csc2_file_tran(db->tablename, i, &csc2, &len, tran);
-        struct schema *schema = create_version_schema(csc2, i, db->dbenv);
+        get_csc2_file_tran(tbl->tablename, i, &csc2, &len, tran);
+        struct schema *schema = create_version_schema(csc2, i, tbl->dbenv);
         if (schema == NULL) {
+            free(csc2);
             logmsg(LOGMSG_ERROR, "Could not create schema version: %d\n", i);
             return 1;
         }
-        add_tag_schema(db->tablename, schema);
+        add_tag_schema(tbl->tablename, schema);
         free(csc2);
     }
     return 0;
@@ -6268,7 +6263,7 @@ int reload_after_bulkimport(dbtable *db, tran_type *tran)
         logmsg(LOGMSG_ERROR, "Failed to load new .ONDISK\n");
         return 1;
     }
-    if (load_new_versions(db, NULL)) {
+    if (load_csc2_versions(db, NULL)) {
         logmsg(LOGMSG_ERROR, "Failed to load .ONDISK.VER.nn\n");
         return 1;
     }
@@ -6293,7 +6288,7 @@ int reload_db_tran(dbtable *db, tran_type *tran)
         logmsg(LOGMSG_ERROR, "Failed to load new .ONDISK\n");
         return 1;
     }
-    if (load_new_versions(db, tran)) {
+    if (load_csc2_versions(db, tran)) {
         logmsg(LOGMSG_ERROR, "Failed to load .ONDISK.VER.nn\n");
         return 1;
     }

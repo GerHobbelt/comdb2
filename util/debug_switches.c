@@ -82,6 +82,8 @@ static struct debug_switches {
     int abort_ufid_open;
     int bdb_handle_reset_delay;
     int recover_ddlk_sp_delay;
+    int force_file_version_to_fail;
+    int rep_verify_req_delay;
 } debug_switches;
 
 int init_debug_switches(void)
@@ -261,6 +263,9 @@ int init_debug_switches(void)
     register_int_switch("bdb_handle_reset_delay",
                         "Force a 5-second delay in bdb_handle_reset between closing and opening",
                         &debug_switches.bdb_handle_reset_delay);
+
+    register_debug_switch("force_file_version_to_fail", &debug_switches.force_file_version_to_fail);
+    register_debug_switch("rep_verify_req_delay", &debug_switches.rep_verify_req_delay);
     return 0;
 }
 
@@ -491,4 +496,19 @@ int debug_switch_bdb_handle_reset_delay(void)
 int debug_switch_recover_ddlk_sp_delay(void)
 {
     return debug_switches.recover_ddlk_sp_delay;
+}
+int debug_switch_force_file_version_to_fail(void)
+{
+    /* one-off */
+    int ret = debug_switches.force_file_version_to_fail;
+    debug_switches.force_file_version_to_fail = 0;
+    return ret;
+}
+int debug_switch_rep_verify_req_delay(void)
+{
+    return debug_switches.rep_verify_req_delay;
+}
+void debug_switch_set_rep_verify_req_delay(int val)
+{
+    debug_switches.rep_verify_req_delay = val;
 }

@@ -345,7 +345,7 @@ columnname(A) ::= nm(A) typetoken(Y). {sqlite3AddColumn(pParse,&A,&Y);}
   BLOBFIELD BULKIMPORT
   CHECK COMMITSLEEP CONSUMER CONVERTSLEEP COUNTER COVERAGE CRLE
   DATA DATABLOB DATACOPY DBPAD DEFERRABLE DETERMINISTIC DISABLE 
-  DISTRIBUTION DRYRUN ENABLE EXEC EXECUTE FORCE FUNCTION GENID48 GET 
+  DISTRIBUTION DRYRUN ENABLE EXCLUSIVE_ANALYZE EXEC EXECUTE FORCE FUNCTION GENID48 GET 
   GRANT INCLUDE INCREMENT IPU ISC KW LUA LZ4 MANUAL MERGE NONE
   ODH OFF OP OPTION OPTIONS
   PAGEORDER PARTITIONED PASSWORD PAUSE PERIOD PENDING PROCEDURE PUT
@@ -2412,15 +2412,19 @@ cmd ::= dryrun DROP TIME PARTITION nm(N). {
 /////////////////////////////////// ANALYZE ///////////////////////////////////
 
 cmd ::= ANALYZE nm(N) dbnm(Y) analyzepercentage(P) analyzeopt(X). {
-    comdb2analyze(pParse, X, &N, &Y, P);
+    comdb2analyze(pParse, X, &N, &Y, P, 0);
 }
 
 cmd ::= ANALYZE ALL analyzepercentage(P) analyzeopt(X). {
-    comdb2analyze(pParse, X, NULL, NULL, P);
+    comdb2analyze(pParse, X, NULL, NULL, P, 0);
 }
 
 cmd ::= ANALYZE analyzepercentage(P) analyzeopt(X). {
-    comdb2analyze(pParse, X, NULL, NULL, P);
+    comdb2analyze(pParse, X, NULL, NULL, P, 0);
+}
+
+cmd ::= EXCLUSIVE_ANALYZE nm(N) dbnm(Y) analyzepercentage(P) analyzeopt(X). {
+    comdb2analyze(pParse, X, &N, &Y, P, 1);
 }
 
 %type analyzepercentage {int}

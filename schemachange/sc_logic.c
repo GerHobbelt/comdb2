@@ -224,6 +224,13 @@ static void stop_and_free_sc(struct ireq *iq, int rc,
             sbuf2printf(s->sb, "SUCCESS\n");
         }
     }
+    if (rc && iq->sc->kind == SC_ADDTABLE) {
+        delete_temp_table(iq, iq->sc->db);
+        if (iq->sc->already_finalized) {
+            rem_dbtable_from_thedb_dbs(iq->sc->db);
+        }
+    }
+
     sc_set_running(iq, s, s->tablename, 0, NULL, 0, 0, __func__, __LINE__);
     if (do_free) {
         free_sc(s);
@@ -502,7 +509,7 @@ static int do_ddl(ddl_t pre, ddl_t post, struct ireq *iq,
             local_lock = 1;
         }
         rc = do_finalize(post, iq, s, tran);
-        if (!s->is_osql) {
+        if (!rc && !s->is_osql) {
             create_sqlmaster_records(tran);
             create_sqlite_master();
         }
@@ -1211,6 +1218,7 @@ int open_temp_db_resume(struct ireq *iq, struct dbtable *db, char *prefix, int r
     {
         int rc;
         tran_type * tmp_tran = tran;
+    retry:
         if (!tmp_tran) {
             rc = trans_start(iq, NULL, &tmp_tran);
             if (rc)
@@ -1224,11 +1232,18 @@ int open_temp_db_resume(struct ireq *iq, struct dbtable *db, char *prefix, int r
             db->numblobs + 1, /* one main record + the blobs blobs */
             db->dbenv->bdb_env, temp, &bdberr, tmp_tran);
         if (db->handle == NULL) {
-            if (tmp_tran != tran)
+            if (tmp_tran != tran) {
                 trans_abort(iq, tmp_tran);
+                tmp_tran = NULL;
+                if (bdberr == BDBERR_DEADLOCK) {
+                    logmsg(LOGMSG_WARN, "%s: retrying on BDBERR_DEADLOCK\n", __func__);
+                    goto retry;
+                }
+            }
 
             logmsg(LOGMSG_ERROR, "%s: failed to open %s, rcode %d\n", __func__,
                    tmpname, bdberr);
+
             free(tmpname);
             return -1;
         }

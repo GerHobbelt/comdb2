@@ -1055,8 +1055,9 @@ REGISTER_TUNABLE("rep_process_txn_trace",
                  "transactions. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_rep_process_txn_time, READONLY | NOARG,
                  NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("reqldiffstat", NULL, TUNABLE_INTEGER, &diffstat_thresh,
-                 READONLY, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("rep_skip_recovery", "Skip recovery if truncate won't unwind a transaction.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_rep_skip_recovery, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("reqldiffstat", NULL, TUNABLE_INTEGER, &diffstat_thresh, READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("reqltruncate", NULL, TUNABLE_INTEGER, &reqltruncate, READONLY,
                  NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("retry", NULL, TUNABLE_INTEGER, &db->retry, READONLY, NULL,
@@ -2482,5 +2483,11 @@ REGISTER_TUNABLE("incoherent_clnt_wait", "Delay incoherent reject if without mas
 
 REGISTER_TUNABLE("new_leader_duration", "Time new query waits for replicanted-recovery (Default: 3sec)",
                  TUNABLE_INTEGER, &gbl_new_leader_duration, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("timer_pstack_interval", "Skip pstack if last one was within specified interval in secs (Default: 5mins [300sec])",
+                 TUNABLE_INTEGER, &gbl_timer_pstack_interval, INTERNAL, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("timer_warn_interval", "Flag timer thds which tick longer than specified interval in msec. To disable, set to 0 (Default: 1500ms)",
+                 TUNABLE_INTEGER, &gbl_timer_warn_interval, INTERNAL, NULL, NULL, NULL, NULL);
 
 #endif /* _DB_TUNABLES_H */
