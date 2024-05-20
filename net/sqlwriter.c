@@ -29,16 +29,8 @@
 #include <net_appsock.h>
 #include <sqlwriter.h>
 
-#define MSEC(x) (x * 1000) /* millisecond -> microsecond */
-
-//heartbeat will tick every
-static struct timeval heartbeat_time = {.tv_sec = 0, .tv_usec = MSEC(100)};
-
 //send heartbeat if no data every (seconds)
 #define min_hb_time 1
-
-//writer will block if outstanding data hits:
-#define max_buf KB(256)
 
 struct sqlwriter {
     struct sqlclntstate *clnt;
@@ -56,7 +48,6 @@ struct sqlwriter {
     sql_pack_fn *pack_hb;
     unsigned bad : 1;
     unsigned done : 1;
-    unsigned flush : 1;
     unsigned do_timeout : 1;
     unsigned timed_out : 1;
     unsigned wr_continue : 1;
@@ -75,7 +66,6 @@ static void sql_enable_flush(struct sqlwriter *writer)
 
 static void sql_disable_flush(struct sqlwriter *writer)
 {
-    writer->flush = 0;
     writer->wr_continue = 1;
     event_del(writer->flush_ev);
 }
@@ -83,8 +73,14 @@ static void sql_disable_flush(struct sqlwriter *writer)
 static void sql_timeout_cb(int fd, short what, void *arg)
 {
     struct sqlwriter *writer = arg;
-    /* We'll block on the mutex if writer is still packing */
-    Pthread_mutex_lock(&writer->wr_lock);
+    check_thd(writer->timer_thd);
+    int rc = pthread_mutex_trylock(&writer->wr_lock);
+    if (rc == EBUSY) {
+        struct timeval retry = {.tv_usec = 100 * 1000};
+        event_add(writer->timeout_ev, &retry);
+    } else if (rc) {
+        abort();
+    }
     if (!writer->bad && !writer->done) {
         writer->do_timeout = 1;
         maxquerytime_cb(writer->clnt);
@@ -98,6 +94,7 @@ static void sql_heartbeat_cb(int fd, short what, void *arg);
 
 void sql_enable_heartbeat(struct sqlwriter *writer)
 {
+    struct timeval heartbeat_time = {.tv_usec = 100000 }; // 100ms
     event_add(writer->heartbeat_ev, &heartbeat_time);
 }
 
@@ -109,18 +106,27 @@ void sql_disable_heartbeat(struct sqlwriter *writer)
 
 void sql_enable_timeout(struct sqlwriter *writer, int timeout_sec)
 {
-    if (!writer->timeout_ev) {
-        writer->timeout_ev = event_new(writer->timer_base, -1, 0, sql_timeout_cb, writer);
+    check_thd(writer->timer_thd);
+    if (writer->timeout_ev) {
+        abort();
     }
+    writer->timeout_ev = event_new(writer->timer_base, -1, 0, sql_timeout_cb, writer);
     struct timeval timeout = {.tv_sec = timeout_sec};
     event_add(writer->timeout_ev, &timeout);
 }
 
+static void do_sql_disable_timeout(void *arg)
+{
+    struct sqlwriter *writer = arg;
+    check_thd(writer->timer_thd);
+    event_free(writer->timeout_ev);
+    writer->timeout_ev = NULL;
+}
+
 void sql_disable_timeout(struct sqlwriter *writer)
 {
-    if (writer->timeout_ev) {
-        event_del(writer->timeout_ev);
-    }
+    if (!writer->timeout_ev) return;
+    run_on_base(writer->timer_base, do_sql_disable_timeout, writer);
 }
 
 static int wr_evbuffer_ssl(struct sqlwriter *writer, int fd)
@@ -146,9 +152,9 @@ static int wr_evbuffer(struct sqlwriter *writer, int fd)
 /*
  * If a writer is packing a protobuf response (which may invoke sql_flush()
  * multiple times to write out partially serialized data), we don't give up
- * wr_lock. Heartbeat would become a nop; timeout would block on wr_lock.
- * The 2 macros below make sure that we do not double-lock wr_lock, and
- * that we do not release wr_lock when we're not supposed to.
+ * wr_lock. Heartbeat would become a nop; timeout would retry to enqueue an
+ * error message. The 2 macros below make sure that we do not double-lock
+ * wr_lock, and that we do not release wr_lock when we're not supposed to.
  */
 #define LOCK_WR_LOCK_ONLY_IF_NOT_PACKING(w)                                                                            \
     do {                                                                                                               \
@@ -200,7 +206,6 @@ int sql_flush(struct sqlwriter *writer)
         UNLOCK_WR_LOCK_ONLY_IF_NOT_PACKING(writer);
         return -1;
     }
-    writer->flush = 1;
     writer->wr_continue = 0;
     UNLOCK_WR_LOCK_ONLY_IF_NOT_PACKING(writer);
     return sql_flush_int(writer);
@@ -216,7 +221,7 @@ static int sql_pack_response(struct sqlwriter *writer, void *arg)
     int rc;
     writer->packing = 1;
 
-    rc = writer->pack(writer, arg);
+    rc = writer->pack(writer, arg); /* newsql_pack */
     /*
      * rc > 0 : done
      *    = 0 : not done yet
@@ -232,9 +237,9 @@ static int sql_pack_response(struct sqlwriter *writer, void *arg)
 }
 
 /*
- * An 'append' callback to consume 'packed' data as it is being generated.
- * The function flushes every `max_buf' many bytes, hence keeps the memory use
- * of the writer's evbuffer under `max_buf'.
+ * An 'append' callback to consume 'packed' data as it is being generated. The
+ * function flushes every `SQLWRITER_MAX_BUF' many bytes, hence keeps the
+ * memory use of the writer's evbuffer under `SQLWRITER_MAX_BUF'.
  *
  * This is how the function gets invoked:
  * sql_write -> sql_pack_response -> newsql_pack -> sql_append_packed
@@ -247,7 +252,7 @@ int sql_append_packed(struct sqlwriter *writer, const void *data, size_t len)
     int rc;
 
     while (nleft > 0) {
-        if (evbuffer_get_length(wr_buf) >= max_buf) {
+        if (evbuffer_get_length(wr_buf) >= SQLWRITER_MAX_BUF) {
             /* We've accumulated enough bytes, flush now. */
             rc = sql_flush(writer);
 
@@ -260,7 +265,7 @@ int sql_append_packed(struct sqlwriter *writer, const void *data, size_t len)
                 return -1;
         }
 
-        int cap = max_buf - evbuffer_get_length(wr_buf);
+        int cap = SQLWRITER_MAX_BUF - evbuffer_get_length(wr_buf);
         if (cap >= nleft) {
             /* We're about to exit the loop. Do a copy here. */
             rc = evbuffer_add(wr_buf, ptr + (len - nleft), nleft);
@@ -298,11 +303,10 @@ int sql_write(struct sqlwriter *writer, void *arg, int flush)
         return -1;
     }
     int outstanding = evbuffer_get_length(writer->wr_buf);
-    if ((outstanding < max_buf) && !flush) {
+    if ((outstanding < SQLWRITER_MAX_BUF) && !flush) {
         Pthread_mutex_unlock(&writer->wr_lock);
         return 0;
     }
-    writer->flush = flush;
     writer->wr_continue = 0;
     int orig_packing = writer->packing;
     writer->packing = 1; /* to skip locking in sql_flush_cb */
@@ -310,8 +314,8 @@ int sql_write(struct sqlwriter *writer, void *arg, int flush)
     writer->packing = orig_packing;
     outstanding = evbuffer_get_length(writer->wr_buf);
     Pthread_mutex_unlock(&writer->wr_lock);
-    if (outstanding) return 0;
-    return sql_flush_int(writer);
+    if (outstanding) return sql_flush(writer);
+    return 0;
 }
 
 int sql_writev(struct sqlwriter *writer, struct iovec *v, int n)
@@ -394,7 +398,6 @@ void sql_reset(struct sqlwriter *writer)
 {
     writer->bad = 0;
     writer->done = 0;
-    writer->flush = 0;
     writer->timed_out = 0;
     writer->wr_continue = 1;
     writer->sent_at = time(NULL);

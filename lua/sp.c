@@ -63,8 +63,9 @@
 #include <tohex.h>
 #include <ctrace.h>
 #include <bb_oscompat.h>
-#include "comdb2_atomic.h"
-#include "sql_stmt_cache.h"
+#include <comdb2_atomic.h>
+#include <sql_stmt_cache.h>
+#include <debug_switches.h>
 
 #ifdef WITH_RDKAFKA    
 
@@ -180,8 +181,7 @@ static int db_reset(Lua);
 static SP create_sp(char **err);
 static int push_trigger_args_int(Lua, dbconsumer_t *, struct qfound *, char **);
 static void reset_sp(SP);
-static int recover_ddlk_sp(struct sqlclntstate *);
-static void *recover_ddlk_fail_sp(struct sqlclntstate *, void *);
+static void setup_clnt_for_sp(struct sqlclntstate *);
 
 static const int dbq_delay_ms = 1000; // ms
 
@@ -416,11 +416,10 @@ static int luabb_trigger_register(Lua L, trigger_reg_t *reg, int register_timeou
         /* trigger_register_req() can take up to 1 second. Tick up immediately
            after this so that it's guaranteed that the appsock thread observes
            a good query state for the next heartbeat. */
-        comdb2_sql_tick();
+        comdb2_sql_tick_no_recover_deadlock();
         if (register_timeoutms) {
             if (retry == 0) {
-                luabb_error(L, sp, " trigger:%s registration timeout %dms",
-                            reg->spname, register_timeoutms);
+                luabb_error(L, sp, "trigger:%s registration timeout %dms", reg->spname, register_timeoutms);
                 rc = -2;
                 goto out;
             }
@@ -430,10 +429,10 @@ static int luabb_trigger_register(Lua L, trigger_reg_t *reg, int register_timeou
             rc = luabb_error(L, sp, sp->error);
             goto out;
         }
-        sleep(1);
-        /* Tick up after the sleep(1). Again this is to make sure that
-           the appsock thread sends out a "good" heartbeat every second. */
-        comdb2_sql_tick();
+        if (rc != NET_SEND_FAIL_TIMEOUT) {
+            sleep(1);
+            comdb2_sql_tick_no_recover_deadlock();
+        }
     }
 
 out:
@@ -453,14 +452,12 @@ static void luabb_trigger_unregister(Lua L, dbconsumer_t *q)
         }
         Pthread_mutex_unlock(q->lock);
     }
-    comdb2_sql_tick(); /* See comments in luabb_trigger_register(). */
     int retry = 10;
     do {
         int rc = trigger_unregister_req(&q->info);
         if (rc == CDB2_TRIG_REQ_SUCCESS || rc == CDB2_TRIG_ASSIGNED_OTHER) return;
         if (L) check_retry_conditions(L, &q->info, 1);
     } while (--retry);
-    comdb2_sql_tick(); /* See comments in luabb_trigger_register(). */
 }
 
 static int stop_waiting(Lua L, dbconsumer_t *q)
@@ -677,7 +674,7 @@ static int dbq_poll_int(Lua L, dbconsumer_t *q)
     int rc = dbq_get(&q->iq, 0, &q->last, &f.item, NULL, NULL, &q->fnd, &f.seq,
                      bdb_get_lid_from_cursortran(clnt->dbtran.cursor_tran));
     Pthread_mutex_unlock(q->lock);
-    comdb2_sql_tick();
+    comdb2_sql_tick_no_recover_deadlock();
     sp->num_instructions = 0;
     if (rc == 0) {
         char *err;
@@ -3231,8 +3228,7 @@ static int db_create_thread_int(Lua lua, const char *funcname)
     clnt->exec_lua_thread = 1;
     clnt->dbtran.trans_has_sp = 1;
     clnt->queue_me = 1;
-    clnt->recover_ddlk = recover_ddlk_sp;
-    clnt->recover_ddlk_fail = recover_ddlk_fail_sp;
+    setup_clnt_for_sp(clnt);
     clnt->done_cb = thread_dispatch_failed;
     strcpy(clnt->tzname, parent_clnt->tzname);
     Pthread_mutex_init(&dbthd->lua_thread_mutex, NULL);
@@ -3935,6 +3931,7 @@ static struct dbtable *find_and_lock_queue_table(Lua L)
 
 static int recover_ddlk_sp(struct sqlclntstate *clnt)
 {
+    if (debug_switch_recover_ddlk_sp_delay()) sleep(3);
     SP sp = clnt->sp;
     if (!sp) return 0;
     dbstmt_t *dbstmt, *tmp;
@@ -3959,6 +3956,14 @@ static void *recover_ddlk_fail_sp(struct sqlclntstate *clnt, void *arg)
     sqlite3_mutex_leave(sqlite3_db_mutex(sp->thd->sqldb));
     return NULL;
 }
+
+static void setup_clnt_for_sp(struct sqlclntstate *clnt)
+{
+    clnt->recover_ddlk = recover_ddlk_sp;
+    clnt->recover_ddlk_fail = recover_ddlk_fail_sp;
+    clnt->dohsql_disable = 1;
+}
+
 
 static int db_udf_error(Lua L)
 {
@@ -7297,8 +7302,7 @@ void *exec_trigger(char *spname)
     thrman_set_subtype(thd.thr_self, THRSUBTYPE_LUA_SQL);
     thd.sqlthd->clnt = &clnt;
     clnt.thd = &thd;
-    clnt.recover_ddlk = recover_ddlk_sp;
-    clnt.recover_ddlk_fail = recover_ddlk_fail_sp;
+    setup_clnt_for_sp(&clnt);
 
     get_curtran(thedb->bdb_env, &clnt);
 
@@ -7336,13 +7340,14 @@ void exec_thread(struct sqlthdstate *thd, struct sqlclntstate *clnt)
 int exec_procedure(struct sqlthdstate *thd, struct sqlclntstate *clnt, char **err)
 {
     clnt->ready_for_heartbeats = 1;
-    clnt->recover_ddlk = recover_ddlk_sp;
-    clnt->recover_ddlk_fail = recover_ddlk_fail_sp;
     int osql_max_trans = clnt->osql_max_trans;
+    int dohsql_disable = clnt->dohsql_disable;
+    setup_clnt_for_sp(clnt);
     int rc = exec_procedure_int(thd, clnt, err, 0);
     clnt->osql_max_trans = osql_max_trans;
     clnt->recover_ddlk = NULL;
     clnt->recover_ddlk_fail = NULL;
+    clnt->dohsql_disable = dohsql_disable;
     if (clnt->sp) {
         reset_sp(clnt->sp);
     }

@@ -361,6 +361,7 @@ enum {
     XRESPONSE(RESPONSE_ERROR_PREPARE)                                          \
     XRESPONSE(RESPONSE_ERROR_PREPARE_RETRY)                                    \
     XRESPONSE(RESPONSE_ERROR_REJECT)                                           \
+    XRESPONSE(RESPONSE_REDIRECT_FOREIGN)                                       \
     XRESPONSE(RESPONSE_FLUSH)                                                  \
     XRESPONSE(RESPONSE_HEARTBEAT)                                              \
     XRESPONSE(RESPONSE_QUERY_STATS)                                            \
@@ -923,6 +924,8 @@ struct sqlclntstate {
     replay_func *recover_ddlk_fail;
     unsigned skip_eventlog: 1;
     unsigned request_fp: 1;
+    unsigned dohsql_disable: 1;
+    unsigned can_redirect_fdb: 1;
 
     char *sqlengine_state_file;
     int sqlengine_state_line;
@@ -1541,6 +1544,7 @@ int send_row(struct sqlclntstate *clnt, struct sqlite3_stmt *stmt,
              uint64_t row_id, int postpone, struct errstat *err);
 
 int comdb2_sql_tick(void);
+int comdb2_sql_tick_no_recover_deadlock(void);
 int forward_set_commands(struct sqlclntstate *clnt, cdb2_hndl_tp *hndl,
                          struct errstat *err);
 
