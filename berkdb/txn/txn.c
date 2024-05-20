@@ -90,7 +90,7 @@ extern unsigned long long get_commit_context(const void *, uint32_t generation);
 int comdb2_time_epoch(void);
 void ctrace(char *format, ...);
 
-int __txn_commit_map_add(DB_ENV *, u_int64_t, DB_LSN);
+int __txn_commit_map_add_nolock(DB_ENV *, u_int64_t, DB_LSN);
 
 extern int gbl_is_physical_replicant;
 extern int gbl_commit_lsn_map;
@@ -493,7 +493,7 @@ static void __txn_assert_notran(dbenv)
 int __txn_assert_notran_pp(dbenv)
 	DB_ENV *dbenv;
 {
-	int rep_check, ret;
+	int rep_check;
 	PANIC_CHECK(dbenv);
 	if (IS_REP_CLIENT(dbenv))
 		return (0);
@@ -1161,6 +1161,7 @@ __txn_commit_int(txnp, flags, ltranid, llid, last_commit_lsn, rlocks, inlks,
 	if (IS_ZERO_LSN(txnp->last_lsn)) {
 		/* Put a breakpoint here */
 		iszero = 1;
+		(void)iszero;
 	}
 #endif
 
@@ -1559,20 +1560,26 @@ __txn_commit_int(txnp, flags, ltranid, llid, last_commit_lsn, rlocks, inlks,
 		return 0;
 	}
 
+	Pthread_mutex_lock(&dbenv->txmap->txmap_mutexp);
+
 	if (commit_lsn_map && !txnp->parent) {
-		ret = __txn_commit_map_add(dbenv, txnp->utxnid, txnp->last_lsn);
+		ret = __txn_commit_map_add_nolock(dbenv, txnp->utxnid, txnp->last_lsn);
 		if (ret != 0) {
+			Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
 			goto err;
 		}
 
 		/* No grandchildren in comdb2, so this is sufficient. */
 		LISTC_FOR_EACH(&txnp->committed_kids, utxnid_track, lnk) {
-			ret = __txn_commit_map_add(dbenv, utxnid_track->utxnid, txnp->last_lsn);
+			ret = __txn_commit_map_add_nolock(dbenv, utxnid_track->utxnid, txnp->last_lsn);
 			if (ret != 0) {
+				Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
 				goto err;
 			}
 		}
 	}
+
+	Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
 
 	remove_td_txn(txnp);
 	if (logbytes) {
@@ -2765,7 +2772,7 @@ __txn_checkpoint(dbenv, kbytes, minutes, flags)
 	DB_ENV *dbenv;
 	u_int32_t kbytes, minutes, flags;
 {
-	struct mintruncate_entry *mt, *newmt;
+	struct mintruncate_entry *newmt;
 	DB_LSN ckp_lsn, last_ckp, ltrans_ckp_lsn, ckp_lsn_sav, prepared;
 	DB_TXNMGR *mgr;
 	DB_TXNREGION *region;

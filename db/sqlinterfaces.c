@@ -146,6 +146,7 @@ extern hash_t *gbl_fingerprint_hash;
 extern pthread_mutex_t gbl_fingerprint_hash_mu;
 extern int gbl_alternate_normalize;
 extern int gbl_typessql;
+extern int gbl_modsnap_asof;
 
 /* Once and for all:
 
@@ -181,6 +182,7 @@ extern int gbl_disable_sql_dlmalloc;
 extern struct ruleset *gbl_ruleset;
 extern int gbl_sql_release_locks_on_slow_reader;
 extern int gbl_sql_no_timeouts_on_release_locks;
+extern int get_snapshot(struct sqlclntstate *clnt, int *f, int *o);
 
 /* gets incremented each time a user's password is changed. */
 int gbl_bpfunc_auth_gen = 1;
@@ -402,9 +404,8 @@ int column_count(struct sqlclntstate *clnt, sqlite3_stmt *stmt)
 
 int column_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int iCol)
 {
-    if (clnt && clnt->plugin.column_type)
-        return clnt->plugin.column_type(clnt, stmt, iCol);               \
-    return sqlite3_column_type(stmt, iCol);                              \
+    if (clnt && clnt->plugin.column_type) return clnt->plugin.column_type(clnt, stmt, iCol);
+    return sqlite3_column_type(stmt, iCol);
 }
 
 sqlite_int64 column_int64(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int iCol)
@@ -601,6 +602,8 @@ char *tranlevel_tostr(int lvl)
         return "TRANLEVEL_SOSQL";
     case TRANLEVEL_RECOM:
         return "TRANLEVEL_RECOM";
+    case TRANLEVEL_MODSNAP:
+        return "TRANLEVEL_MODSNAP";
     case TRANLEVEL_SERIAL:
         return "TRANLEVEL_SERIAL";
     default:
@@ -1293,13 +1296,13 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
                 rows = clnt->nrows;
             }
             if (clnt->work.zOrigNormSql) { /* NOTE: Not subject to prepare. */
-                add_fingerprint(clnt, stmt, string_ref_cstr(h->sql_ref), clnt->work.zOrigNormSql, cost, time, prepTime,
-                                rows, logger, fingerprint, is_lua);
+                add_fingerprint(clnt, stmt, h->sql_ref, clnt->work.zOrigNormSql, cost, time, prepTime, rows, logger,
+                                fingerprint, is_lua);
                 have_fingerprint = 1;
             } else if (clnt->work.zNormSql &&
                        sqlite3_is_success(clnt->prep_rc)) {
-                add_fingerprint(clnt, stmt, string_ref_cstr(h->sql_ref), clnt->work.zNormSql, cost, time, prepTime,
-                                rows, logger, fingerprint, is_lua);
+                add_fingerprint(clnt, stmt, h->sql_ref, clnt->work.zNormSql, cost, time, prepTime, rows, logger,
+                                fingerprint, is_lua);
                 have_fingerprint = 1;
             } else {
                 reqlog_reset_fingerprint(logger, FINGERPRINTSZ);
@@ -1500,7 +1503,7 @@ static int retrieve_snapshot_info(char *sql, char *tzname)
                             return -1;
                         } else {
                             long long lcl_ret = flibc_ntohll(ret);
-                            if (gbl_new_snapisol_asof &&
+                            if ((gbl_new_snapisol_asof || gbl_modsnap_asof) &&
                                 bdb_is_timestamp_recoverable(thedb->bdb_env,
                                                              lcl_ret) <= 0) {
                                 logmsg(LOGMSG_ERROR,
@@ -1714,6 +1717,10 @@ static void reqlog_setup_begin_commit_rollback(struct sqlthdstate *thd, struct s
 int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                      enum trans_clntcomm sideeffects)
 {
+    int rc;
+
+    rc = SQLITE_OK;
+
     Pthread_mutex_lock(&clnt->wait_mutex);
     /* if this is a new chunk, do not stop the hearbeats.*/
     if (sideeffects != TRANS_CLNTCOMM_CHUNK)
@@ -1731,6 +1738,29 @@ int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
     /* clients don't expect column data if it's a converted request */
     reqlog_logf(thd->logger, REQL_QUERY, "\"%s\" new transaction\n",
                 (clnt->sql) ? clnt->sql : "(???.)");
+
+    /* Latch the last commit LSN */
+    struct dbtable *db = &thedb->static_table;
+    assert(db->handle);
+    if (clnt->dbtran.mode == TRANLEVEL_MODSNAP) {
+        if (clnt->is_hasql_retry) {
+            get_snapshot(clnt, (int *) &clnt->last_commit_lsn_file, (int *) &clnt->last_commit_lsn_offset);
+        }
+        if (bdb_get_modsnap_start_state(db->handle, clnt->is_hasql_retry, clnt->snapshot,
+                    &clnt->last_commit_lsn_file, &clnt->last_commit_lsn_offset, 
+                    &clnt->last_checkpoint_lsn_file, &clnt->last_checkpoint_lsn_offset)) {
+            logmsg(LOGMSG_ERROR, "%s: Failed to get modsnap txn start state\n", __func__);
+            rc = SQLITE_INTERNAL;
+            goto done;
+        }
+
+        if (bdb_register_modsnap(db->handle, clnt->last_checkpoint_lsn_file, clnt->last_checkpoint_lsn_offset, &clnt->modsnap_registration)) {
+            logmsg(LOGMSG_ERROR, "%s: Failed to register modsnap txn\n", __func__);
+            rc = SQLITE_INTERNAL;
+            goto done;
+        }
+        clnt->modsnap_in_progress = 1;
+    }
 
     if (clnt->osql.replay)
         goto done;
@@ -1750,7 +1780,7 @@ done:
         reqlog_end_request(thd->logger, -1, __func__, __LINE__);
     }
 
-    return SQLITE_OK;
+    return rc;
 }
 
 static int handle_sql_wrongstate(struct sqlthdstate *thd,
@@ -1789,7 +1819,7 @@ void reset_query_effects(struct sqlclntstate *clnt)
     bzero(&clnt->chunk_effects, sizeof(clnt->chunk_effects));
 }
 
-static char *sqlenginestate_tostr(int state)
+char *sqlenginestate_tostr(int state)
 {
     switch (state) {
     case SQLENG_NORMAL_PROCESS:
@@ -1829,12 +1859,14 @@ inline int replicant_is_able_to_retry(struct sqlclntstate *clnt)
         return 0;
 
     if ((clnt->dbtran.mode == TRANLEVEL_SNAPISOL ||
-         clnt->dbtran.mode == TRANLEVEL_SERIAL) &&
+         clnt->dbtran.mode == TRANLEVEL_SERIAL ||
+         clnt->dbtran.mode == TRANLEVEL_MODSNAP) &&
         !get_asof_snapshot(clnt) && gbl_snapshot_serial_verify_retry)
         return !clnt->sent_data_to_client;
 
     return clnt->dbtran.mode != TRANLEVEL_SNAPISOL &&
-           clnt->dbtran.mode != TRANLEVEL_SERIAL;
+           clnt->dbtran.mode != TRANLEVEL_SERIAL &&
+           clnt->dbtran.mode != TRANLEVEL_MODSNAP;
 }
 
 static inline int replicant_can_retry_rc(struct sqlclntstate *clnt, int rc)
@@ -1851,7 +1883,8 @@ static inline int replicant_can_retry_rc(struct sqlclntstate *clnt, int rc)
     /* Verify error can be retried in reccom or lower */
     return (rc == CDB2ERR_VERIFY_ERROR) &&
            (clnt->dbtran.mode != TRANLEVEL_SNAPISOL) &&
-           (clnt->dbtran.mode != TRANLEVEL_SERIAL);
+           (clnt->dbtran.mode != TRANLEVEL_SERIAL) && 
+           (clnt->dbtran.mode != TRANLEVEL_MODSNAP);
 }
 
 static int free_clnt_ddl_context(void *obj, void *arg)
@@ -1892,6 +1925,7 @@ void abort_dbtran(struct sqlclntstate *clnt)
         break;
 
     case TRANLEVEL_RECOM:
+    case TRANLEVEL_MODSNAP:
         recom_abort(clnt);
         break;
 
@@ -1930,6 +1964,12 @@ static int do_commitrollback(struct sqlthdstate *thd, struct sqlclntstate *clnt,
 {
     int irc = 0, rc = 0, bdberr = 0;
 
+    clnt->modsnap_in_progress = 0;
+    if (clnt->modsnap_registration) {
+        bdb_unregister_modsnap(thedb->bdb_env, clnt->modsnap_registration);
+        clnt->modsnap_registration = NULL;
+    }
+
     if (!clnt->intrans) {
         reqlog_logf(thd->logger, REQL_QUERY, "\"%s\" ignore (no transaction)\n",
                     (clnt->sql) ? clnt->sql : "(???.)");
@@ -1940,7 +1980,8 @@ static int do_commitrollback(struct sqlthdstate *thd, struct sqlclntstate *clnt,
         sql_debug_logf(clnt, __func__, __LINE__, "starting\n");
 
         switch (clnt->dbtran.mode) {
-        case TRANLEVEL_RECOM: {
+        case TRANLEVEL_RECOM:
+        case TRANLEVEL_MODSNAP: {
             /* here we handle the communication with bp */
             if (clnt->ctrl_sqlengine == SQLENG_FNSH_STATE) {
                 rc = recom_commit(clnt, thd->sqlthd, clnt->tzname, 0);
@@ -2232,8 +2273,15 @@ int handle_sql_commitrollback(struct sqlthdstate *thd,
                               struct sqlclntstate *clnt,
                               enum trans_clntcomm sideeffects)
 {
+
     int rc = 0;
     int outrc = 0;
+
+    clnt->modsnap_in_progress = 0;
+    if (clnt->modsnap_registration) {
+        bdb_unregister_modsnap(thedb->bdb_env, clnt->modsnap_registration);
+        clnt->modsnap_registration = NULL;
+    }
 
     if (sideeffects == TRANS_CLNTCOMM_NORMAL) {
     /* Don't setup(reset) logger for commits of individual chunks,
@@ -3232,12 +3280,12 @@ int get_prepared_stmt_try_lock(struct sqlthdstate *thd,
     return rc;
 }
 
-static int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt,
-                           struct sqlclntstate *clnt, char **err)
+int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt, struct sqlclntstate *clnt, char **err,
+                    int sample_queries)
 {
     int rc = 0;
     int params = param_count(clnt);
-    struct cson_array *arr = get_bind_array(logger, params);
+    struct cson_array *arr = get_bind_array(logger, params, sample_queries);
     struct param_data p;
     char intspace[12]; // enough space to fit string representation of integer
     for (int i = 0; i < params; ++i) {
@@ -3246,10 +3294,10 @@ static int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt,
             rc = SQLITE_ERROR;
             goto out;
         }
-        if (p.pos == 0) {
+        if (!sample_queries && p.pos == 0) {
             p.pos = sqlite3_bind_parameter_index(stmt, p.name);
         }
-        if (p.pos == 0) {
+        if (!sample_queries && p.pos == 0) {
             rc = SQLITE_ERROR;
             goto out;
         }
@@ -3258,12 +3306,12 @@ static int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt,
         if (strlen(p.name) <= 0) { // name is blank because this was from cdb2_bind_index()
             name = intspace;
             sprintf(name, "?%d", p.pos);
-        }
-        else 
+        } else
             name = p.name;
 
         if (p.null || p.type == COMDB2_NULL_TYPE) {
-            rc = sqlite3_bind_null(stmt, p.pos);
+            if (!sample_queries)
+                rc = sqlite3_bind_null(stmt, p.pos);
             eventlog_bind_null(arr, name);
             if (rc) { /* position out-of-bounds, etc? */
                 goto out;
@@ -3291,17 +3339,20 @@ static int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt,
                 logmsg(LOGMSG_ERROR, "carray_bind: invalid type:%d size:%d\n", p.type, p.len);
                 return -1;
             }
-            rc = sqlite3_carray_bind(stmt, p.pos, p.u.p, p.arraylen, flag, SQLITE_STATIC);
+            if (!sample_queries)
+                rc = sqlite3_carray_bind(stmt, p.pos, p.u.p, p.arraylen, flag, SQLITE_STATIC);
             continue;
         }
         switch (p.type) {
         case CLIENT_INT:
         case CLIENT_UINT:
-            rc = sqlite3_bind_int64(stmt, p.pos, p.u.i);
+            if (!sample_queries)
+                rc = sqlite3_bind_int64(stmt, p.pos, p.u.i);
             eventlog_bind_int64(arr, name, p.u.i, p.len);
             break;
         case CLIENT_REAL:
-            rc = sqlite3_bind_double(stmt, p.pos, p.u.r);
+            if (!sample_queries)
+                rc = sqlite3_bind_double(stmt, p.pos, p.u.r);
             eventlog_bind_double(arr, name, p.u.r, p.len);
             break;
         case CLIENT_CSTR:
@@ -3311,27 +3362,32 @@ static int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt,
              * the string on first '\0'.
              */
             p.len = strnlen((char *)p.u.p, p.len);
-            rc = sqlite3_bind_text(stmt, p.pos, p.u.p, p.len, NULL);
+            if (!sample_queries)
+                rc = sqlite3_bind_text(stmt, p.pos, p.u.p, p.len, NULL);
             eventlog_bind_text(arr, name, p.u.p, p.len);
             break;
         case CLIENT_VUTF8:
-            rc = sqlite3_bind_text(stmt, p.pos, p.u.p, p.len, NULL);
+            if (!sample_queries)
+                rc = sqlite3_bind_text(stmt, p.pos, p.u.p, p.len, NULL);
             eventlog_bind_varchar(arr, name, p.u.p, p.len);
             break;
         case CLIENT_BLOB:
         case CLIENT_BYTEARRAY:
-            rc = sqlite3_bind_blob(stmt, p.pos, p.u.p, p.len, NULL);
+            if (!sample_queries)
+                rc = sqlite3_bind_blob(stmt, p.pos, p.u.p, p.len, NULL);
             eventlog_bind_blob(arr, name, p.u.p, p.len);
             break;
         case CLIENT_DATETIME:
         case CLIENT_DATETIMEUS:
-            rc = sqlite3_bind_datetime(stmt, p.pos, &p.u.dt, clnt->tzname);
+            if (!sample_queries)
+                rc = sqlite3_bind_datetime(stmt, p.pos, &p.u.dt, clnt->tzname);
             eventlog_bind_datetime(arr, name, &p.u.dt, clnt->tzname);
             break;
         case CLIENT_INTVYM:
         case CLIENT_INTVDS:
         case CLIENT_INTVDSUS:
-            rc = sqlite3_bind_interval(stmt, p.pos, &p.u.tv);
+            if (!sample_queries)
+                rc = sqlite3_bind_interval(stmt, p.pos, &p.u.tv);
             eventlog_bind_interval(arr, name, &p.u.tv);
             break;
         default:
@@ -3352,7 +3408,7 @@ static int bind_params(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                        struct sql_state *rec, struct errstat *err)
 {
     char *errstr = NULL;
-    int rc = bind_parameters(thd->logger, rec->stmt, clnt, &errstr);
+    int rc = bind_parameters(thd->logger, rec->stmt, clnt, &errstr, 0);
     if (rc) {
         errstat_set_rcstrf(err, ERR_PREPARE, "%s", errstr);
     }
@@ -4883,7 +4939,6 @@ static int send_heartbeat(struct sqlclntstate *clnt)
     return 0;
 }
 
-    
 /* timeradd() for struct timespec*/
 #define TIMESPEC_ADD(a, b, result)                                             \
     do {                                                                       \
@@ -5438,6 +5493,12 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     if (gbl_sockbplog) {
         init_bplog_socket(clnt);
     }
+
+    clnt->modsnap_in_progress = 0;
+    if (clnt->modsnap_registration) {
+        bdb_unregister_modsnap(thedb->bdb_env, clnt->modsnap_registration);
+        clnt->modsnap_registration = NULL;
+    }
 }
 
 void reset_clnt_flags(struct sqlclntstate *clnt)
@@ -5446,6 +5507,11 @@ void reset_clnt_flags(struct sqlclntstate *clnt)
     clnt->has_recording = 0;
     clnt->statement_timedout = 0;
     clnt->writeTransaction = 0;
+    clnt->modsnap_in_progress = 0;
+    if (clnt->modsnap_registration) {
+        bdb_unregister_modsnap(thedb->bdb_env, clnt->modsnap_registration);
+        clnt->modsnap_registration = NULL;
+    }
 }
 
 int sbuf_is_local(SBUF2 *sb)
@@ -5599,6 +5665,7 @@ retry:
                 }
             }
 #endif
+            (void)retry;
             goto retry;
         }
         if (pd.revents & POLLOUT) {
@@ -5980,14 +6047,16 @@ static int execute_sql_query_offload_inner_loop(struct sqlclntstate *clnt,
             Get the LOCK!
             */
             if (clnt->dbtran.mode == TRANLEVEL_RECOM ||
-                clnt->dbtran.mode == TRANLEVEL_SERIAL) {
+                clnt->dbtran.mode == TRANLEVEL_SERIAL ||
+                clnt->dbtran.mode == TRANLEVEL_MODSNAP) {
                 Pthread_mutex_lock(&clnt->dtran_mtx);
             }
 
             ret = next_row(clnt, stmt);
 
             if (clnt->dbtran.mode == TRANLEVEL_RECOM ||
-                clnt->dbtran.mode == TRANLEVEL_SERIAL) {
+                clnt->dbtran.mode == TRANLEVEL_SERIAL ||
+                clnt->dbtran.mode == TRANLEVEL_MODSNAP) {
                 Pthread_mutex_unlock(&clnt->dtran_mtx);
             }
 

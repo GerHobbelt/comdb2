@@ -41,9 +41,11 @@
 #define COMPOSITE_TUNABLE_SEP '.'
 
 extern int gbl_waitalive_iterations;
+extern int gbl_allow_anon_id_for_spmux;
 extern int gbl_allow_lua_print;
 extern int gbl_allow_lua_dynamic_libs;
 extern int gbl_allow_pragma;
+extern int gbl_archive_on_init;
 extern int gbl_berkdb_epochms_repts;
 extern int gbl_pmux_route_enabled;
 extern int gbl_allow_user_schema;
@@ -111,6 +113,8 @@ extern int gbl_return_long_column_names;
 extern int gbl_round_robin_stripes;
 extern int skip_clear_queue_extents;
 extern int gbl_rep_skip_recovery;
+extern int gbl_sample_queries;
+extern int gbl_sample_queries_max_queries;
 extern int gbl_slow_rep_process_txn_freq;
 extern int gbl_slow_rep_process_txn_minms;
 extern int gbl_slow_rep_process_txn_maxms;
@@ -130,6 +134,7 @@ extern int gbl_db_lock_maxid_override;
 extern int gbl_udp;
 extern int gbl_update_delete_limit;
 extern int gbl_updategenids;
+extern int gbl_use_modsnap_for_snapshot;
 extern int gbl_use_appsock_as_sqlthread;
 extern int gbl_use_node_pri;
 extern int gbl_watchdog_watch_threshold;
@@ -483,7 +488,15 @@ extern int gbl_timer_warn_interval;
 int gbl_incoherent_clnt_wait = 10;
 int gbl_new_leader_duration = 3;
 extern int gbl_transaction_grace_period;
+extern int gbl_partition_sc_reorder;
 extern int gbl_dohsql_joins;
+extern int gbl_altersc_latency;
+extern int gbl_altersc_delay_usec;
+extern int gbl_altersc_latency_thr;
+extern int gbl_altersc_sampling_sec;
+extern int gbl_altersc_latency_inc;
+extern int gbl_sc_history_max_rows;
+extern int gbl_sc_status_max_rows;
 
 /*
   =========================================================

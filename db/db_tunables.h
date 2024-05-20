@@ -32,6 +32,9 @@ REGISTER_TUNABLE("allow_lua_print", "Enable to allow stored "
                                     "DB's stdout. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_allow_lua_print, READONLY | NOARG, NULL,
                  NULL, NULL, NULL);
+REGISTER_TUNABLE("allow_anon_id_for_spmux",
+                 "Allow anonymous identities over connections routed from the secure pmux port", TUNABLE_INTEGER,
+                 &gbl_allow_anon_id_for_spmux, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("allow_lua_dynamic_libs",
                  "Enable to allow use of dynamic "
                  "libraries (Default: off)",
@@ -68,6 +71,11 @@ REGISTER_TUNABLE("analyze_tbl_threads",
                  "generating index statistics. (Default: 5)",
                  TUNABLE_INTEGER, &analyze_max_table_threads, READONLY, NULL,
                  NULL, analyze_set_max_table_threads, NULL);
+REGISTER_TUNABLE("archive_on_init",
+                 "Archive files with database extensions in the database directory "
+                 "at the time of init. (Default: ON)",
+                 TUNABLE_BOOLEAN, &gbl_archive_on_init, READONLY, NULL,
+                 NULL, NULL, NULL);
 REGISTER_TUNABLE("badwrite_intvl", NULL, TUNABLE_INTEGER,
                  &gbl_test_badwrite_intvl, READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("bbenv", NULL, TUNABLE_BOOLEAN, &gbl_bbenv,
@@ -1248,6 +1256,10 @@ REGISTER_TUNABLE("use_planned_schema_change",
                  "changing table. (Default: 1)",
                  TUNABLE_INTEGER, &gbl_default_plannedsc, READONLY | NOARG,
                  NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("use_modsnap_for_snapshot",
+                 "Use modsnap implementation for snapshot transactions. (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_use_modsnap_for_snapshot, READONLY,
+                 NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("watchthreshold",
                  "Panic if node has been unhealty (unresponsive, out of resources, etc.) for more "
                  "than this many seconds. The default value is 60.",
@@ -1989,6 +2001,14 @@ REGISTER_TUNABLE("skip_catchup_logic",
                  &gbl_skip_catchup_logic, EXPERIMENTAL | INTERNAL, NULL, NULL,
                  NULL, NULL);
 
+REGISTER_TUNABLE("sample_queries", "Sample queries and query plans to table comdb2_sample_queries. (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_sample_queries, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("max_query_sample_queries",
+                 "Maximum number of queries to be placed into the sample "
+                 "queries hash (Default: 1000)",
+                 TUNABLE_INTEGER, &gbl_sample_queries_max_queries, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("protobuf_connectmsg", "Use protobuf in net library for the connect message. (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_pb_connectmsg, 0, NULL, NULL, NULL, NULL);
 
@@ -2491,8 +2511,36 @@ REGISTER_TUNABLE("transaction_grace_period",
                  "Time to wait for connections with pending transactions to go away on exit. (Default: 60)",
                  TUNABLE_INTEGER, &gbl_transaction_grace_period, 0, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("partition_sc_reorder",
+                 "If the schema change is serialized for a partition, run current shard last",
+                 TUNABLE_BOOLEAN, &gbl_partition_sc_reorder, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("dohsql_joins",
                  "Enable to support joins in parallel sql execution (default: on)",
                  TUNABLE_BOOLEAN, &gbl_dohsql_joins, 0, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("altersc_latency",
+                 "Enable tracking master queue latency and delay alter schema changes if too high",
+                 TUNABLE_BOOLEAN, &gbl_altersc_latency, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("altersc_sampling_sec",
+                 "Sample average of master queue time every this many seconds",
+                 TUNABLE_INTEGER, &gbl_altersc_sampling_sec, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("altersc_latency_thr",
+                 "Threahoold for alter schema change impact on queue time, as msec/sec increase",
+                 TUNABLE_INTEGER, &gbl_altersc_latency_thr, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("altersc_latency_inc",
+                 "How many msec to add to altersc_queue_latency if altersc_latency_thr still reached",
+                 TUNABLE_INTEGER, &gbl_altersc_latency_inc, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("altersc_delay_usec",
+                 "Extra microseconds to sleep each converted record during alter schema change, if latency on master increases",
+                 TUNABLE_INTEGER, &gbl_altersc_delay_usec, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("sc_history_max_rows", "Max number of rows returned in comdb2_sc_history (Default: 1000)",
+                 TUNABLE_INTEGER, &gbl_sc_history_max_rows, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("sc_status_max_rows", "Max number of rows returned in comdb2_sc_status (Default: 1000)",
+                 TUNABLE_INTEGER, &gbl_sc_status_max_rows, 0, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

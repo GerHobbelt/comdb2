@@ -454,7 +454,7 @@ static void dispatch_waiting_client(int fd, short what, void *data)
         logmsg(LOGMSG_USER, "%s: new query on incoherent node, dropping socket fd:%d\n", __func__, appdata->fd);
         newsql_cleanup(appdata);
     } else if (dispatch_client(appdata) == 0) {
-        logmsg(LOGMSG_USER, "%s: waited %lds.%ldms for election fd:%d\n", __func__, diff.tv_sec, diff.tv_usec / 1000, appdata->fd);
+        logmsg(LOGMSG_USER, "%s: waited %lds.%dms for election fd:%d\n", __func__, diff.tv_sec, (int)diff.tv_usec / 1000, appdata->fd);
         sql_wait_for_leader(appdata->writer, NULL);
     } else {
         newsql_cleanup(appdata);
@@ -585,7 +585,20 @@ static void process_query(struct newsql_appdata_evbuffer *appdata)
         }
     }
     clnt->sqlite_row_format = have_sqlite_fmt;
-    if (SSL_IS_PREFERRED(gbl_client_ssl_mode)) {
+
+    /* If the connection is forwarded from a secure pmux port,
+     * both IAM and TLS must be enabled on the database. */
+    if (clnt->secure) {
+        int has_externalauth = gbl_uses_externalauth || gbl_uses_externalauth_connect;
+        int ssl_able = SSL_IS_ABLE(gbl_client_ssl_mode);
+        if (!has_externalauth || !ssl_able) {
+            logmsg(LOGMSG_ERROR, "can't handle a secure connection: externalauth %d ssl %d\n", has_externalauth,
+                   ssl_able);
+            goto err;
+        }
+    }
+
+    if (clnt->secure || SSL_IS_PREFERRED(gbl_client_ssl_mode)) {
         switch(ssl_check(appdata, have_ssl)) {
         case 1: goto read;
         case 2: goto err;
@@ -1088,6 +1101,7 @@ static void newsql_setup_clnt_evbuffer(struct appsock_handler_arg *arg, int admi
 
     clnt->admin = admin;
     clnt->force_readonly = arg->is_readonly;
+    clnt->secure = arg->secure;
     appdata->base = arg->base;
     appdata->initial = 1;
     appdata->local = local;

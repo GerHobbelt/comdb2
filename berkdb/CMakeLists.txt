@@ -12,6 +12,7 @@ set(BERK_C
   btree/bt_prefix.c
   btree/bt_put.c
   btree/bt_rec.c
+  btree/bt_snaprec.c
   btree/bt_reclaim.c
   btree/bt_recno.c
   btree/bt_rsearch.c
@@ -51,6 +52,7 @@ set(BERK_C
   db/db_pgdump.c
   db/db_pr.c
   db/db_rec.c
+  db/db_snaprec.c
   db/db_reclaim.c
   db/db_remove.c
   db/db_rename.c
@@ -112,6 +114,8 @@ set(BERK_C
   mp/mp_stat.c
   mp/mp_sync.c
   mp/mp_trickle.c
+  mp/mp_versioned.c
+  mp/mp_vcache.c
 
   mutex/mut_pthread.c
   mutex/mutex.c
@@ -276,12 +280,16 @@ include_directories(
   ${LZ4_INCLUDE_DIR}
   ${OPENSSL_INCLUDE_DIR}
 )
+
 if (${CMAKE_C_COMPILER_ID} STREQUAL GNU)
-  set_target_properties(db PROPERTIES COMPILE_FLAGS "-Wno-unused-variable -Wno-unused-but-set-variable -Wno-unused-label")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-const-variable")
 elseif(${CMAKE_C_COMPILER_ID} STREQUAL Clang)
-  set_target_properties(db PROPERTIES COMPILE_FLAGS "-Wno-knr-promoted-parameter -Wno-unused-variable -Wno-unused-const-variable -Wno-unused-label -Wno-unused-but-set-variable")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-knr-promoted-parameter")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-const-variable")
 elseif(${CMAKE_C_COMPILER_ID} STREQUAL AppleClang)
-  set_target_properties(db PROPERTIES COMPILE_FLAGS "-Wno-knr-promoted-parameter -Wno-unused-variable -Wno-unused-const-variable -Wno-unused-label")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-deprecated-non-prototype")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-knr-promoted-parameter")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Wno-unused-const-variable")
 endif()
 
 if (COMDB2_BBCMAKE)
