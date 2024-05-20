@@ -37,6 +37,7 @@
 #include "fwd_types.h"
 #include "bdb_net.h"
 #include <sqlglue.h>
+#include <bdbglue.h>
 
 #include <assert.h>
 
@@ -231,16 +232,6 @@ enum {
 #undef DEF_ATTR
 #undef DEF_ATTR_2
     BDB_ATTR_MAX
-};
-
-/*
- * Backend thread event constants.
- */
-enum {
-    BDBTHR_EVENT_DONE_RDONLY = 0,
-    BDBTHR_EVENT_START_RDONLY = 1,
-    BDBTHR_EVENT_DONE_RDWR = 2,
-    BDBTHR_EVENT_START_RDWR = 3
 };
 
 /*
@@ -1265,7 +1256,6 @@ void *bdb_temp_table_get_cur(struct temp_cursor *skippy);
 void bdb_get_cache_stats(bdb_state_type *bdb_state, uint64_t *hits,
                          uint64_t *misses, uint64_t *reads, uint64_t *writes,
                          uint64_t *thits, uint64_t *tmisses);
-void bdb_thread_event(bdb_state_type *bdb_state, int event);
 
 void bdb_stripe_get(bdb_state_type *bdb_state);
 void bdb_stripe_done(bdb_state_type *bdb_state);
@@ -1403,8 +1393,6 @@ unsigned long long bdb_get_current_lsn(bdb_state_type *bdb_state,
                                        unsigned int *offset);
 
 void bdb_set_tran_verify_updateid(tran_type *tran);
-
-int bdb_am_i_coherent(bdb_state_type *bdb_state);
 
 int bdb_get_num_notcoherent(bdb_state_type *bdb_state);
 void bdb_get_notcoherent_list(bdb_state_type *bdb_state,
@@ -1609,6 +1597,41 @@ typedef struct {
 
 int bdb_llmeta_get_sc_history(tran_type *t, sc_hist_row **hist_out, int *num,
                               int *bdberr, const char *tablename);
+
+typedef struct schema_version_row {
+    char *db_name;
+    int vers;
+    char *csc2;
+} schema_version_row;
+
+/*
+ * bdb_llmeta_free_schema_versions --
+ *
+ * Frees list of schema versions allocated by `bdb_llmeta_get_schema_versions`
+ * `data` is the list of schema versions to be freed 
+ * and `n` is the number of elements in this list.
+ */ 
+void bdb_llmeta_free_schema_versions(schema_version_row *data, int n);
+
+/*
+ * bdb_llmeta_get_schema_versions --
+ *
+ * Gets all schema versions stored in llmeta.
+ * 
+ * On success: 
+ * - returns zero
+ * - `data` points to a list of versions.
+ * Elements in this list are of type `schema_version_row`.
+ * *** This list must be freed with a call to `bdb_llmeta_free_schema_versions`***
+ * - `num` points to the number of entries in this list
+ *
+ * On failure:
+ * - returns nonzero
+ * - `data` points to NULL
+ * - `num` points to zero
+ */
+int bdb_llmeta_get_schema_versions(tran_type *t, schema_version_row **data, int *num,
+                                    int *bdberr);
 
 int bdb_del_schema_change_history(tran_type *t, const char *tablename,
                                   uint64_t seed);
@@ -2344,6 +2367,9 @@ int bdb_unpack_heap(bdb_state_type *bdb_state, void *in, size_t inlen,
                     void **out, size_t *outlen, void **freeptr);
 /* Abort if this thread has an open transaction */
 void bdb_assert_notran(bdb_state_type *bdb_state);
+
+/* Set this node's sequence number */
+void bdb_set_seqnum(void *in_bdb_state);
 
 int bdb_debug_log(bdb_state_type *bdb_state, tran_type *tran, int op);
 

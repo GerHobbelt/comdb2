@@ -608,8 +608,6 @@ void *clean_exit_thd(void *unused)
     if (!gbl_ready)
         return NULL;
 
-    physrep_cleanup();
-
     Pthread_mutex_lock(&exiting_lock);
     if (gbl_exit) {
         Pthread_mutex_unlock(&exiting_lock);
@@ -5281,8 +5279,7 @@ static void dump_table_sizes(struct dbenv *dbenv)
         else
             percent = 0;
         logmsg(LOGMSG_USER, "table %*s sz %12s %3d%% ", maxtblname,
-               db->tablename, fmt_size(b, sizeof(b), db->totalsize),
-               (int)percent);
+               db->tablename, fmt_size(b, sizeof(b), db->totalsize), (int)percent);
         logmsg(LOGMSG_USER, "(dta %s", fmt_size(b, sizeof(b), db->dtasize));
         for (ii = 0; ii < db->nix; ii++) {
            logmsg(LOGMSG_USER, ", ix%d %s", ii, fmt_size(b, sizeof(b), db->ixsizes[ii]));
@@ -5291,7 +5288,12 @@ static void dump_table_sizes(struct dbenv *dbenv)
            logmsg(LOGMSG_USER, ", blob%d %s", ii,
                    fmt_size(b, sizeof(b), db->blobsizes[ii]));
         }
-       logmsg(LOGMSG_USER, ")\n");
+        logmsg(LOGMSG_USER, ")");
+        if (db->timepartition_name)
+            logmsg(LOGMSG_USER, " partition %s", db->timepartition_name);
+        if (db->sqlaliasname)
+            logmsg(LOGMSG_USER, " sqlname %s", db->sqlaliasname);
+        logmsg(LOGMSG_USER, "\n");
     }
     for (ndb = 0; ndb < dbenv->num_qdbs; ndb++) {
         db = dbenv->qdbs[ndb];

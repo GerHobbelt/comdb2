@@ -2000,7 +2000,7 @@ static int incoh_reject(int admin, bdb_state_type *bdb_state)
 {
     /* If this isn't from an admin session and the node isn't coherent
        and we disallow running queries on an incoherent node, reject */
-    return (!admin && !bdb_am_i_coherent(bdb_state) && !gbl_allow_incoherent_sql);
+    return (!admin && !bdb_try_am_i_coherent(bdb_state) && !gbl_allow_incoherent_sql);
 }
 
 int is_commit_rollback(struct sqlclntstate *clnt)
@@ -2021,8 +2021,7 @@ int newsql_first_run(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
             clnt->request_fp = 1;
             break;
         case CDB2_CLIENT_FEATURES__REQUIRE_FASTSQL:
-            logmsg(LOGMSG_USER, "%s:%d cdb2api requested for 'fastsql' protocol\n",
-                   __func__, __LINE__);
+            logmsg(LOGMSG_USER, "%s:%d cdb2api requested for 'fastsql' protocol\n", __func__, __LINE__);
             appdata->protocol_version = 1; // FASTSQL's protocol version = 1
             break;
         case CDB2_CLIENT_FEATURES__CAN_REDIRECT_FDB:

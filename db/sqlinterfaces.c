@@ -3232,9 +3232,10 @@ static int bind_parameters(struct reqlogger *logger, sqlite3_stmt *stmt,
     int rc = 0;
     int params = param_count(clnt);
     struct cson_array *arr = get_bind_array(logger, params);
-    struct param_data p = {0};
+    struct param_data p;
     char intspace[12]; // enough space to fit string representation of integer
     for (int i = 0; i < params; ++i) {
+        memset(&p, 0, sizeof(p));
         if ((rc = param_value(clnt, &p, i)) != 0) {
             rc = SQLITE_ERROR;
             goto out;
@@ -5369,7 +5370,6 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     clnt->verifyretry_off = 0;
     clnt->is_expert = 0;
     clnt->is_fast_expert = 0;
-    clnt->authdata = NULL;
 
     /* Reset the version, we have to set it for every run */
     clnt->spname[0] = 0;

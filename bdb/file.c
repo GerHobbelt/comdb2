@@ -1319,6 +1319,8 @@ int bdb_del_list_free(void *list, int *bdberr)
 
 */
 
+/* XXX stupid chicken/egg.  this variable cannot live in the bdb_state
+   cause it needs to get set before we have a bdb_state */
 bdb_state_type *gbl_bdb_state;
 
 char *bdb_trans(const char infile[], char outfile[])
@@ -2416,8 +2418,6 @@ static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
 
     master_host = bdb_state->repinfo->master_host;
 
-    net_set_heartbeat_check_time(bdb_state->repinfo->netinfo, 60);
-
     /* Create the environment handle. */
     rc = db_env_create(&dbenv, 0);
     if (rc != 0) {
@@ -3010,6 +3010,7 @@ if (!is_real_netinfo(bdb_state->repinfo->netinfo))
             return NULL;
         }
         print(bdb_state, "dbenv_open: started rep as CLIENT\n");
+        call_for_election(bdb_state, __func__, __LINE__);
     }
 
     if (bdb_state->rep_started) {
@@ -3220,9 +3221,6 @@ done2:
        early acks wont send out a lsn messages on a checkpoint */
     is_early = gbl_early;
     gbl_early = 0;
-
-    /* expect heartbeats from every node every 5 seconds */
-    net_set_heartbeat_check_time(bdb_state->repinfo->netinfo, 10);
 
     /* this will make it so we start sending ACTUAL LSN values to the master
        instead of lying about our LSN (sending a MAX) which we have been doing.
@@ -5532,10 +5530,7 @@ extern pthread_key_t lockmgr_key;
 static void run_once(void)
 {
     Pthread_key_create(&lockmgr_key, NULL);
-
-    Pthread_key_create(&bdb_key, NULL);
-
-    Pthread_key_create(&lock_key, bdb_lock_destructor);
+    bdb_init_lock_key();
 }
 
 static void deadlock_happened(struct berkdb_deadlock_info *deadlock_info)
@@ -5937,7 +5932,7 @@ static bdb_state_type *bdb_open_int(int envonly, const char name[], const char d
 
         Pthread_mutex_init(&(bdb_state->repinfo->appseqnum_lock), NULL);
 
-        bdb_set_key(bdb_state);
+        gbl_bdb_state = bdb_state;
 
         /* create a blkseq db before we open the main environment,
          * since recovery routines will expect it to exist */

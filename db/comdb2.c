@@ -324,7 +324,7 @@ int gbl_maxretries = 500;              /* thats a lotta retries */
 int gbl_maxblobretries =
     0; /* everyone assures me this can't happen unless the data is corrupt */
 int gbl_maxcontextskips = 10000; /* that's a whole whale of a lotta retries */
-int gbl_heartbeat_check = 0, gbl_heartbeat_send = 0, gbl_decom = 0;
+int gbl_decom = 0;
 int gbl_netbufsz = 1 * 1024 * 1024;
 int gbl_loghist = 0;
 int gbl_loghist_verbose = 0;
@@ -1656,6 +1656,7 @@ void clean_exit(void)
     bdb_exiting(thedb->static_table.handle);
 
     stop_threads(thedb);
+    physrep_cleanup();
     flush_db();
     if (gbl_backend_opened)
         llmeta_dump_mapping(thedb);
@@ -4036,6 +4037,7 @@ static int init(int argc, char **argv)
     }
 
     if (!gbl_exit && !gbl_create_mode && (thedb->nsiblings == 1 || thedb->master == gbl_myhostname)) {
+        bdb_set_seqnum(thedb->bdb_env);
         bdb_upgrade_all_prepared(thedb->bdb_env);
     }
 
@@ -4183,12 +4185,6 @@ static int init(int argc, char **argv)
     }
     if (gbl_net_poll) {
         net_set_poll(thedb->handle_sibling, gbl_net_poll);
-    }
-    if (gbl_heartbeat_send) {
-        net_set_heartbeat_send_time(thedb->handle_sibling, gbl_heartbeat_send);
-    }
-    if (gbl_heartbeat_check) {
-        net_set_heartbeat_check_time(thedb->handle_sibling, gbl_heartbeat_check);
     }
 
     net_setbufsz(thedb->handle_sibling, gbl_netbufsz);
@@ -5612,7 +5608,8 @@ int main(int argc, char **argv)
     Pthread_create(&timer_tid, &timer_attr, timer_thread, NULL);
     Pthread_attr_destroy(&timer_attr);
 
-    start_physrep_threads();
+    if (!gbl_exit)
+        start_physrep_threads();
 
     if (debug_switch_rep_verify_req_delay()) {
         extern int gbl_rep_newmaster_processed_on_replicant;

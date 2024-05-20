@@ -3793,8 +3793,8 @@ static void rem_rep_mon(struct rep_mon *rm)
     Pthread_mutex_unlock(&rep_mon_lk);
 }
 
-static int process_berkdb(bdb_state_type *bdb_state, char *host, DBT *control,
-                          DBT *rec)
+static __thread pid_t process_berkdb_tid = 0;
+static int process_berkdb(bdb_state_type *bdb_state, char *host, DBT *control, DBT *rec)
 {
     int rc;
     int r;
@@ -3846,7 +3846,11 @@ static int process_berkdb(bdb_state_type *bdb_state, char *host, DBT *control,
     pthread_threadid_np(pthread_self(), &id);
     rm.tid = id;
 #elif defined _LINUX_SOURCE
-    rm.tid = syscall(__NR_gettid);
+    if (process_berkdb_tid == 0) {
+        process_berkdb_tid = rm.tid = syscall(__NR_gettid);
+    } else {
+        rm.tid = process_berkdb_tid;
+    }
 #else
     rm.tid = getpid();
 #endif
@@ -3856,6 +3860,16 @@ static int process_berkdb(bdb_state_type *bdb_state, char *host, DBT *control,
     add_rep_mon(&rm);
 
     bdb_state->repinfo->repstats.rep_process_message++;
+
+    if (rectype == REP_VERIFY) {
+        /*
+         * We're going into rep-verify-match that may re-open
+         * triggers (see __bam_open()). Acquire all trigger locks
+         * before acquiring any exclusive locks (bdb-lock, recovery-lock, etc.),
+         * to maintain the same lock ordering as triggers.
+         */
+        bdb_state->dbenv->trigger_pause_all(bdb_state->dbenv);
+    }
 
     /* Rep_verify can set the recovery flag, which causes the code ignores
        locks.
@@ -3912,6 +3926,12 @@ static int process_berkdb(bdb_state_type *bdb_state, char *host, DBT *control,
 
     if (got_writelock) {
         BDB_RELLOCK();
+    }
+
+    if (rectype == REP_VERIFY) {
+        /* At this point, we shouldn't be holding any exclusive locks.
+         * We still hold onto the bdb-lock in read mode, but it's okay. */
+        bdb_state->dbenv->trigger_unpause_all(bdb_state->dbenv);
     }
 
     if (bdb_state->attr->repsleep)
@@ -4215,6 +4235,18 @@ int bdb_am_i_coherent(bdb_state_type *bdb_state)
     BDB_RELLOCK();
 
     return x;
+}
+
+int bdb_try_am_i_coherent(bdb_state_type *bdb_state)
+{
+    int coherent = 0;
+    if (bdb_state->parent) bdb_state = bdb_state->parent;
+    if (BDB_TRYREADLOCK("bdb_am_i_coherent") == 0) {
+        /* if we cannot get bdb-lock, we are not coherent */
+        coherent = bdb_am_i_coherent_int(bdb_state);
+        BDB_RELLOCK();
+    }
+    return coherent;
 }
 
 /* called when the master tells us we're not coherent */
@@ -5841,7 +5873,10 @@ int bdb_master_should_reject(bdb_state_type *bdb_state)
     if (!bdb_state->attr->master_reject_requests)
         return 0;
 
-    BDB_READLOCK("bdb_master_should_reject");
+    if (BDB_TRYREADLOCK("bdb_master_should_reject") != 0) {
+        /* If I can't get bdb-lock, I am not master */
+        return 0;
+    }
 
     if (bdb_state->repinfo->master_host != bdb_state->repinfo->myhost) {
         BDB_RELLOCK();
