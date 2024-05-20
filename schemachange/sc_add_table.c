@@ -312,7 +312,7 @@ int finalize_add_table(struct ireq *iq, struct schema_change_type *s,
     if ((rc = set_header_and_properties(tran, db, s, 0, gbl_init_with_bthash)))
         return rc;
 
-    if (llmeta_set_tables(tran, thedb)) {
+    if ((rc = llmeta_set_tables(tran, thedb))) {
         sc_errf(s, "Failed to set table names in low level meta\n");
         return rc;
     }
@@ -345,14 +345,6 @@ int finalize_add_table(struct ireq *iq, struct schema_change_type *s,
     gbl_sc_commit_count++;
 
     fix_lrl_ixlen_tran(tran);
-
-    if (s->finalize) {
-        if (create_sqlmaster_records(tran)) {
-            sc_errf(s, "create_sqlmaster_records failed\n");
-            return -1;
-        }
-        create_sqlite_master();
-    }
 
     db->sc_to = NULL;
     update_dbstore(db);

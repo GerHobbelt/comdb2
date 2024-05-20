@@ -343,8 +343,13 @@ static int do_finalize(ddl_t func, struct ireq *iq,
         return rc;
     }
 
-    if ((rc = mark_schemachange_over_tran(s->tablename, tran)))
+    if ((rc = mark_schemachange_over_tran(s->tablename, tran))) {
+        if (input_tran == NULL) {
+            trans_abort(iq, tran);
+            sc_del_unused_files(s->db);
+        }
         return rc;
+    }
 
     if (bdb_set_schema_change_status(tran, s->tablename, iq->sc_seed, sc_nrecs,
                                      NULL, 0, BDB_SC_COMMITTED, NULL,
@@ -497,6 +502,10 @@ static int do_ddl(ddl_t pre, ddl_t post, struct ireq *iq,
             local_lock = 1;
         }
         rc = do_finalize(post, iq, s, tran);
+        if (!s->is_osql) {
+            create_sqlmaster_records(tran);
+            create_sqlite_master();
+        }
         if (local_lock)
             unlock_schema_lk();
         if (s->done_type == fastinit && gbl_replicate_local)
@@ -788,9 +797,10 @@ int do_schema_change_locked(struct schema_change_type *s, void *tran)
     return rc;
 }
 
-int finalize_schema_change_thd(struct ireq *iq, tran_type *trans)
+int finalize_schema_change(struct ireq *iq, tran_type *trans)
 {
     if (iq == NULL || iq->sc == NULL) abort();
+    assert(iq->sc->tran == NULL || iq->sc->tran == trans);
     struct schema_change_type *s = iq->sc;
     Pthread_mutex_lock(&s->mtx);
     enum thrtype oldtype = prepare_sc_thread(s);

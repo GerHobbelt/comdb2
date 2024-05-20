@@ -39,9 +39,9 @@
 #include <pb_alloc.h>
 
 #include <newsql.h>
-#include <fsnapf.h>
 
 extern int gbl_nid_dbname;
+extern int gbl_incoherent_clnt_wait;
 extern SSL_CTX *gbl_ssl_ctx;
 extern ssl_mode gbl_client_ssl_mode;
 extern uint64_t gbl_ssl_num_full_handshakes;
@@ -52,6 +52,18 @@ struct ping_pong {
     struct event *ev;
     struct timeval start;
 };
+
+struct newsql_appdata_evbuffer;
+
+struct dispatch_sql {
+    pthread_t thd;
+    int dispatched;
+    struct event *ev;
+    struct newsql_appdata_evbuffer *appdata;
+    TAILQ_ENTRY(dispatch_sql) entry;
+};
+static TAILQ_HEAD(, dispatch_sql) dispatch_list = TAILQ_HEAD_INITIALIZER(dispatch_list);
+static pthread_mutex_t dispatch_lk = PTHREAD_MUTEX_INITIALIZER;
 
 struct ssl_data {
     SSL *ssl;
@@ -66,6 +78,7 @@ struct newsql_appdata_evbuffer {
     struct event *cleanup_ev;
     struct newsqlheader hdr;
     struct ping_pong *ping;
+    struct dispatch_sql *dispatch;
 
     struct evbuffer *rd_buf;
     struct event *rd_hdr_ev;
@@ -98,6 +111,9 @@ static void free_newsql_appdata_evbuffer(int dummyfd, short what, void *arg)
     int fd = appdata->fd;
     rem_sql_evbuffer(clnt);
     rem_appsock_connection_evbuffer(clnt);
+    if (appdata->dispatch) {
+        abort(); /* should have been freed by timeout or coherency-lease */
+    }
     if (appdata->ping) {
         event_free(appdata->ping->ev);
         free(appdata->ping);
@@ -294,7 +310,6 @@ static void wr_dbinfo_int(struct newsql_appdata_evbuffer *appdata, int write_res
 
 static void wr_dbinfo_ssl(struct newsql_appdata_evbuffer *appdata)
 {
-    /* clears openssl's error queue */
     ERR_clear_error();
     struct evbuffer *wr_buf = sql_wrbuf(appdata->writer);
     int len = evbuffer_get_length(wr_buf);
@@ -323,7 +338,12 @@ static void process_dbinfo_int(struct newsql_appdata_evbuffer *appdata, struct e
     host_node_type *hosts[REPMAX];
     int num_hosts = get_hosts_evbuffer(REPMAX, hosts);
     int my_dc = machine_dc(gbl_myhostname);
-    int process_incoherent = bdb_amimaster(thedb->bdb_env);
+    int process_incoherent = 0;
+    if (bdb_amimaster(thedb->bdb_env)) {
+        if (gbl_incoherent_clnt_wait <= 0 || !leader_is_new()) {
+            process_incoherent = 1;
+        }
+    }
     const char *who = bdb_whoismaster(thedb->bdb_env);
     for (int i = 0; i < num_hosts; ++i) {
         CDB2DBINFORESPONSE__Nodeinfo *node;
@@ -335,7 +355,7 @@ static void process_dbinfo_int(struct newsql_appdata_evbuffer *appdata, struct e
         node->has_port = 1;
         node->port = hosts[i]->port;
         node->name = hosts[i]->host;
-        node->incoherent = process_incoherent ? is_incoherent(thedb->bdb_env, node->name) : 0;
+        node->incoherent = process_incoherent ? is_incoherent(thedb->bdb_env, hosts[i]->host_interned) : 0;
         if (who && strcmp(who, node->name) == 0) {
             master = node;
         }
@@ -365,14 +385,6 @@ static void process_dbinfo_int(struct newsql_appdata_evbuffer *appdata, struct e
     cdb2__dbinforesponse__pack(&response, out);
     evbuffer_add(buf, &hdr, sizeof(hdr));
     evbuffer_add(buf, out, len);
-    /* Keep this check temporarily */
-    CDB2DBINFORESPONSE *decode = cdb2__dbinforesponse__unpack(NULL, len, out);
-    if (!decode) {
-        logmsg(LOGMSG_FATAL, "%s:%d failed to decode dbinfo len:%d\n", __func__, __LINE__, len);
-        fsnapf(stderr, out, len);
-        abort();
-    }
-    cdb2__dbinforesponse__free_unpacked(decode, NULL);
 }
 
 static void process_dbinfo(struct newsql_appdata_evbuffer *appdata)
@@ -398,87 +410,145 @@ static void process_get_effects(struct newsql_appdata_evbuffer *appdata)
     event_base_once(appdata->base, appdata->fd, EV_WRITE, wr_dbinfo, appdata, NULL);
 }
 
-static int ssl_check(struct newsql_appdata_evbuffer *appdata, CDB2QUERY *query)
+static int ssl_check(struct newsql_appdata_evbuffer *appdata, int have_ssl)
 {
     if (appdata->ssl_data && appdata->ssl_data->ssl) return 0;
-    for (int i = 0; i < query->sqlquery->n_features; ++i) {
-        if (CDB2_CLIENT_FEATURES__SSL == query->sqlquery->features[i]) {
-            newsql_write_hdr_evbuffer(&appdata->clnt, RESPONSE_HEADER__SQL_RESPONSE_SSL, 0);
-            return 1;
-        }
+    if (have_ssl) {
+        newsql_write_hdr_evbuffer(&appdata->clnt, RESPONSE_HEADER__SQL_RESPONSE_SSL, 0);
+        return 1;
     }
     if (ssl_whitelisted(appdata->clnt.origin) || (SSL_IS_OPTIONAL(gbl_client_ssl_mode))) {
         /* allow plaintext local connections, or server is configured to prefer (but not disallow) SSL clients. */
+        newsql_write_hdr_evbuffer(&appdata->clnt, RESPONSE_HEADER__SQL_RESPONSE_SSL, 0);
         return 0;
     }
     write_response(&appdata->clnt, RESPONSE_ERROR, "database requires SSL connections", CDB2ERR_CONNECT_ERROR);
-    return -1;
+    return 2;
 }
 
-static void check_sqlite_row(struct newsql_appdata_evbuffer *appdata,
-                             CDB2QUERY *query)
+static void dispatch_waiting_client(int fd, short what, void * data)
 {
-    if (!query || !query->sqlquery)
+    struct dispatch_sql *d = data;
+    struct newsql_appdata_evbuffer *appdata = d->appdata;
+    check_thd(d->thd);
+    appdata->dispatch = NULL;
+    event_free(d->ev);
+    if (!bdb_am_i_coherent(thedb->bdb_env)) {
+        logmsg(LOGMSG_USER, "%s: new query on incoherent node, dropping socket fd:%d\n", __func__, appdata->fd);
+        newsql_cleanup(appdata);
+    } else if (dispatch_sql_query_no_wait(&appdata->clnt) != 0) {
+        newsql_cleanup(appdata);
+    }
+    free(d);
+}
+
+void dispatch_waiting_clients(void)
+{
+    Pthread_mutex_lock(&dispatch_lk);
+    struct dispatch_sql *d, *tmp;
+    TAILQ_FOREACH_SAFE(d, &dispatch_list, entry, tmp) {
+        d->dispatched = 1;
+        TAILQ_REMOVE(&dispatch_list, d, entry);
+        struct newsql_appdata_evbuffer *appdata = d->appdata;
+        evtimer_once(appdata->base, dispatch_waiting_client, d);
+    }
+    Pthread_mutex_unlock(&dispatch_lk);
+}
+
+static void do_dispatch_sql(int fd, short what, void *data)
+{
+    Pthread_mutex_lock(&dispatch_lk);
+    struct newsql_appdata_evbuffer *appdata = data;
+    struct dispatch_sql *d = appdata->dispatch;
+    if (!d->dispatched) {
+        TAILQ_REMOVE(&dispatch_list, appdata->dispatch, entry);
+        dispatch_waiting_client(-1, EV_TIMEOUT, d);
+    }
+    Pthread_mutex_unlock(&dispatch_lk);
+}
+
+static void wait_for_leader(struct newsql_appdata_evbuffer *appdata, newsql_loop_result incoherent)
+{
+    if (incoherent == NEWSQL_INCOHERENT) {
+        logmsg(LOGMSG_USER, "%s: new query on incoherent node, dropping socket fd:%d\n", __func__, appdata->fd);
+        newsql_cleanup(appdata);
         return;
-
-    appdata->clnt.sqlite_row_format = 0;
-    for (int i = 0; i < query->sqlquery->n_features; ++i) {
-        if (CDB2_CLIENT_FEATURES__SQLITE_ROW_FORMAT ==
-            query->sqlquery->features[i]) {
-            appdata->clnt.sqlite_row_format = 1;
-            break;
-        }
     }
+    struct dispatch_sql *d = calloc(1, sizeof(struct dispatch_sql));
+    d->appdata = appdata;
+    d->thd = pthread_self();
+    d->ev = event_new(appdata->base, -1, EV_TIMEOUT, do_dispatch_sql, appdata);
+    Pthread_mutex_lock(&dispatch_lk);
+    if (bdb_am_i_coherent(thedb->bdb_env)) {
+        /* check again under lock to prevent race with concurrent leader-upgrade */
+        Pthread_mutex_unlock(&dispatch_lk);
+        event_free(d->ev);
+        free(d);
+        if (dispatch_sql_query_no_wait(&appdata->clnt) != 0) {
+            newsql_cleanup(appdata);
+        }
+        return;
+    }
+    struct timeval timeout;
+    timeout.tv_usec = 0;
+    appdata->dispatch = d;
+    if (incoherent == NEWSQL_NO_LEADER) {
+        timeout.tv_sec = gbl_incoherent_clnt_wait;
+        logmsg(LOGMSG_USER, "%s: new query on incoherent node, waiting %lds for election fd:%d\n",
+               __func__, timeout.tv_sec, appdata->fd);
+    } else if (NEWSQL_NEW_LEADER) {
+        timeout.tv_sec = 1;
+        logmsg(LOGMSG_USER, "%s: new query on incoherent node, waiting %lds for coherency lease fd:%d\n",
+               __func__, timeout.tv_sec, appdata->fd);
+    } else {
+        logmsg(LOGMSG_FATAL, "%s: unknown incoherent state:%d\n", __func__, incoherent);
+        abort();
+    }
+    event_add(d->ev, &timeout);
+    TAILQ_INSERT_TAIL(&dispatch_list, d, entry);
+    Pthread_mutex_unlock(&dispatch_lk);
 }
 
-static void process_query(struct newsql_appdata_evbuffer *appdata, CDB2QUERY *query)
+static void process_query(struct newsql_appdata_evbuffer *appdata)
 {
-    int do_read = 0;
-    int commit_rollback;
-
-    check_sqlite_row(appdata, query);
-
-    if (SSL_IS_PREFERRED(gbl_client_ssl_mode)) {
-        switch (ssl_check(appdata, query)) {
-        case 0: break;
-        case 1: do_read = 1; // fallthrough
-        default: goto out;
-        }
-    }
-    appdata->query = query;
-    CDB2SQLQUERY *sqlquery = appdata->sqlquery = query->sqlquery;
     struct sqlclntstate *clnt = &appdata->clnt;
-    if (sqlquery == NULL) {
-        goto out;
-    }
-    if (appdata->initial) {
-        if (newsql_first_run(clnt, sqlquery) != 0) {
-            goto out;
+    CDB2SQLQUERY *sqlquery = appdata->sqlquery = appdata->query->sqlquery;
+    if (!sqlquery) goto err;
+    int have_ssl = 0;
+    int have_sqlite_fmt = 0;
+    for (int i = 0; i < sqlquery->n_features; ++i) {
+        switch (sqlquery->features[i]) {
+        case CDB2_CLIENT_FEATURES__SSL: have_ssl = 1; break;
+        case CDB2_CLIENT_FEATURES__SQLITE_ROW_FORMAT: have_sqlite_fmt = 1; break;
         }
-        appdata->initial = 0;
     }
-    if (newsql_loop(clnt, sqlquery) != 0) {
-        goto out;
+    clnt->sqlite_row_format = have_sqlite_fmt;
+    if (SSL_IS_PREFERRED(gbl_client_ssl_mode)) {
+        switch(ssl_check(appdata, have_ssl)) {
+        case 1: goto read;
+        case 2: goto err;
+        }
     }
+    if (appdata->initial && newsql_first_run(clnt, sqlquery) != 0) goto err;
+    appdata->initial = 0;
+    newsql_loop_result incoherent = newsql_loop(clnt, sqlquery);
+    if (incoherent == NEWSQL_ERROR) goto err;
+    int commit_rollback;
     if (newsql_should_dispatch(clnt, &commit_rollback) != 0) {
-        do_read = 1;
-        goto out;
+read:   cdb2__query__free_unpacked(appdata->query, &pb_alloc);
+        appdata->query = NULL;
+        evtimer_once(appdata->base, rd_hdr, appdata);
+        return;
     }
     sql_reset(appdata->writer);
     if (clnt->query_timeout) {
         sql_enable_timeout(appdata->writer, clnt->query_timeout);
     }
     sql_enable_heartbeat(appdata->writer);
-    if (dispatch_sql_query_no_wait(clnt) == 0) { /* newsql_done_cb */
-        return;
-    }
-out:
-    cdb2__query__free_unpacked(query, &pb_alloc);
-    appdata->query = NULL;
-    if (do_read) {
-        evtimer_once(appdata->base, rd_hdr, appdata);
-    } else {
-        newsql_cleanup(appdata);
+    if (incoherent) {
+        wait_for_leader(appdata, incoherent);
+    } else if (dispatch_sql_query_no_wait(clnt) != 0) {
+err:    newsql_cleanup(appdata);
     }
 }
 
@@ -490,7 +560,8 @@ static void process_cdb2query(struct newsql_appdata_evbuffer *appdata, CDB2QUERY
     }
     CDB2DBINFO *dbinfo = query->dbinfo;
     if (!dbinfo) {
-        process_query(appdata, query);
+        appdata->query = query;
+        process_query(appdata);
         return;
     }
     if (dbinfo->has_want_effects && dbinfo->want_effects) {
@@ -626,9 +697,7 @@ static int rd_evbuffer_ssl(struct newsql_appdata_evbuffer *appdata)
     SSL *ssl = appdata->ssl_data->ssl;
     int len = KB(16);
     struct iovec v = {0};
-    /* clears openssl's error queue */
     ERR_clear_error();
-
     if (evbuffer_reserve_space(appdata->rd_buf, len, &v, 1) == -1) {
         return -1;
     }
