@@ -38,14 +38,12 @@
 #include <str0.h>
 #include <timer_util.h>
 #include <pb_alloc.h>
-#include <comdb2uuid.h>
-#include <osqlsession.h>
-#include <disttxn.h>
 
 #include <newsql.h>
 
 extern int gbl_nid_dbname;
 extern int gbl_incoherent_clnt_wait;
+extern int gbl_new_leader_duration;
 extern SSL_CTX *gbl_ssl_ctx;
 extern ssl_mode gbl_client_ssl_mode;
 
@@ -57,15 +55,18 @@ struct ping_pong {
 
 struct newsql_appdata_evbuffer;
 
-struct dispatch_sql {
+struct dispatch_sql_arg {
+    struct timeval start;
+    int wait_time;
     pthread_t thd;
     int dispatched;
     struct event *ev;
     struct newsql_appdata_evbuffer *appdata;
-    TAILQ_ENTRY(dispatch_sql) entry;
+    TAILQ_ENTRY(dispatch_sql_arg) entry;
 };
-static TAILQ_HEAD(, dispatch_sql) dispatch_list = TAILQ_HEAD_INITIALIZER(dispatch_list);
+static TAILQ_HEAD(, dispatch_sql_arg) dispatch_list = TAILQ_HEAD_INITIALIZER(dispatch_list);
 static pthread_mutex_t dispatch_lk = PTHREAD_MUTEX_INITIALIZER;
+static struct event_base *dispatch_base;
 
 struct ssl_data {
     SSL *ssl;
@@ -80,7 +81,7 @@ struct newsql_appdata_evbuffer {
     struct event *cleanup_ev;
     struct newsqlheader hdr;
     struct ping_pong *ping;
-    struct dispatch_sql *dispatch;
+    struct dispatch_sql_arg *dispatch;
 
     struct evbuffer *rd_buf;
     struct event *rd_hdr_ev;
@@ -428,13 +429,17 @@ static int ssl_check(struct newsql_appdata_evbuffer *appdata, int have_ssl)
     return 2;
 }
 
-static void dispatch_waiting_client(int fd, short what, void * data)
+static void dispatch_waiting_client(int fd, short what, void *data)
 {
-    struct dispatch_sql *d = data;
+    struct dispatch_sql_arg *d = data;
     struct newsql_appdata_evbuffer *appdata = d->appdata;
     check_thd(d->thd);
     appdata->dispatch = NULL;
     event_free(d->ev);
+    struct timeval end, diff;
+    gettimeofday(&end, NULL);
+    timersub(&end, &d->start, &diff);
+    logmsg(LOGMSG_USER, "%s: waited %lds.%ldms for election fd:%d\n", __func__, diff.tv_sec, diff.tv_usec / 1000, appdata->fd);
     if (!bdb_am_i_coherent(thedb->bdb_env)) {
         logmsg(LOGMSG_USER, "%s: new query on incoherent node, dropping socket fd:%d\n", __func__, appdata->fd);
         newsql_cleanup(appdata);
@@ -444,10 +449,10 @@ static void dispatch_waiting_client(int fd, short what, void * data)
     free(d);
 }
 
-void dispatch_waiting_clients(void)
+static void do_dispatch_waiting_clients(int fd, short what, void *data)
 {
     Pthread_mutex_lock(&dispatch_lk);
-    struct dispatch_sql *d, *tmp;
+    struct dispatch_sql_arg *d, *tmp;
     TAILQ_FOREACH_SAFE(d, &dispatch_list, entry, tmp) {
         d->dispatched = 1;
         TAILQ_REMOVE(&dispatch_list, d, entry);
@@ -457,14 +462,37 @@ void dispatch_waiting_clients(void)
     Pthread_mutex_unlock(&dispatch_lk);
 }
 
-static void do_dispatch_sql(int fd, short what, void *data)
+void dispatch_waiting_clients(void)
+{
+    if (!dispatch_base) return;
+    event_base_once(dispatch_base, -1, EV_TIMEOUT, do_dispatch_waiting_clients, NULL, NULL);
+}
+
+static int do_dispatch_sql(struct newsql_appdata_evbuffer *appdata)
+{
+    struct dispatch_sql_arg *d = appdata->dispatch;
+    if (d->dispatched) return -1; /* already dispatched */
+    if (--d->wait_time <= 0) return 0; /* timed out, dispatch now */
+    if (bdb_am_i_coherent(thedb->bdb_env)) return 0; /* am coherent, dispatch now */
+    if (!bdb_whoismaster(thedb->bdb_env)) return -1; /* still no master, wait more */
+    if (leader_is_new()) {
+        if (d->wait_time > gbl_new_leader_duration) {
+            d->wait_time = gbl_new_leader_duration;
+            logmsg(LOGMSG_USER, "%s: have leader, waiting %ds for coherency lease fd:%d\n",
+                   __func__, d->wait_time, appdata->fd);
+        }
+        return -1; /* wait a bit more to catch up */
+    }
+    return 0; /* have established leader, dispatch now */
+}
+
+static void dispatch_sql(int fd, short what, void *data)
 {
     Pthread_mutex_lock(&dispatch_lk);
     struct newsql_appdata_evbuffer *appdata = data;
-    struct dispatch_sql *d = appdata->dispatch;
-    if (!d->dispatched) {
+    if (do_dispatch_sql(appdata) == 0) {
         TAILQ_REMOVE(&dispatch_list, appdata->dispatch, entry);
-        dispatch_waiting_client(-1, EV_TIMEOUT, d);
+        dispatch_waiting_client(-1, EV_TIMEOUT, appdata->dispatch);
     }
     Pthread_mutex_unlock(&dispatch_lk);
 }
@@ -476,10 +504,10 @@ static void wait_for_leader(struct newsql_appdata_evbuffer *appdata, newsql_loop
         newsql_cleanup(appdata);
         return;
     }
-    struct dispatch_sql *d = calloc(1, sizeof(struct dispatch_sql));
+    struct dispatch_sql_arg *d = calloc(1, sizeof(struct dispatch_sql_arg));
     d->appdata = appdata;
     d->thd = pthread_self();
-    d->ev = event_new(appdata->base, -1, EV_TIMEOUT, do_dispatch_sql, appdata);
+    d->ev = event_new(appdata->base, -1, EV_TIMEOUT | EV_PERSIST, dispatch_sql, appdata);
     Pthread_mutex_lock(&dispatch_lk);
     if (bdb_am_i_coherent(thedb->bdb_env)) {
         /* check again under lock to prevent race with concurrent leader-upgrade */
@@ -491,21 +519,21 @@ static void wait_for_leader(struct newsql_appdata_evbuffer *appdata, newsql_loop
         }
         return;
     }
-    struct timeval timeout;
-    timeout.tv_usec = 0;
     appdata->dispatch = d;
     if (incoherent == NEWSQL_NO_LEADER) {
-        timeout.tv_sec = gbl_incoherent_clnt_wait;
-        logmsg(LOGMSG_USER, "%s: new query on incoherent node, waiting %lds for election fd:%d\n",
-               __func__, timeout.tv_sec, appdata->fd);
+        d->wait_time = gbl_incoherent_clnt_wait;
+        logmsg(LOGMSG_USER, "%s: new query on incoherent node, waiting %ds for election fd:%d\n",
+               __func__, d->wait_time, appdata->fd);
     } else if (NEWSQL_NEW_LEADER) {
-        timeout.tv_sec = 1;
-        logmsg(LOGMSG_USER, "%s: new query on incoherent node, waiting %lds for coherency lease fd:%d\n",
-               __func__, timeout.tv_sec, appdata->fd);
+        d->wait_time = gbl_new_leader_duration;
+        logmsg(LOGMSG_USER, "%s: new query on incoherent node, waiting %ds for coherency lease fd:%d\n",
+               __func__, d->wait_time, appdata->fd);
     } else {
         logmsg(LOGMSG_FATAL, "%s: unknown incoherent state:%d\n", __func__, incoherent);
         abort();
     }
+    struct timeval timeout = {.tv_sec = 1};
+    gettimeofday(&d->start, NULL);
     event_add(d->ev, &timeout);
     TAILQ_INSERT_TAIL(&dispatch_list, d, entry);
     Pthread_mutex_unlock(&dispatch_lk);
@@ -554,103 +582,22 @@ err:    newsql_cleanup(appdata);
     }
 }
 
-static void process_disttxn(struct newsql_appdata_evbuffer *appdata, CDB2DISTTXN *disttxn)
-{
-    struct evbuffer *buf = sql_wrbuf(appdata->writer);
-    CDB2DISTTXNRESPONSE response = CDB2__DISTTXNRESPONSE__INIT;
-    int rcode = 0;
-    if (!bdb_amimaster(thedb->bdb_env) || bdb_lock_desired(thedb->bdb_env)) {
-        rcode = -1;
-        goto sendresponse;
-    }
-
-    switch (disttxn->disttxn->operation) {
-
-    /* Coordinator master tells me (participant master) to prepare */
-    case (CDB2_DIST__PREPARE):
-        rcode = osql_prepare(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier,
-                             disttxn->disttxn->master);
-        break;
-
-    /* Coordinator master tells me (participant master) to discard */
-    case (CDB2_DIST__DISCARD):
-        rcode = osql_discard(disttxn->disttxn->txnid);
-        break;
-
-    /* Participant master sends me (coordinator master) a heartbeat message */
-    case (CDB2_DIST__HEARTBEAT):
-        rcode = participant_heartbeat(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier);
-        break;
-
-    /* Participant master tells me (coordinator master) it has prepared */
-    case (CDB2_DIST__PREPARED):
-        rcode = participant_prepared(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier,
-                                     disttxn->disttxn->master);
-        break;
-
-    /* Participant master tells me (coordinator master) it has failed */
-    case (CDB2_DIST__FAILED_PREPARE):
-        rcode = participant_failed(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier,
-                                   disttxn->disttxn->rcode, disttxn->disttxn->outrc, disttxn->disttxn->errmsg);
-        break;
-
-    /* Coordinator master tells me (participant master) to commit */
-    case (CDB2_DIST__COMMIT):
-        rcode = coordinator_committed(disttxn->disttxn->txnid);
-        break;
-
-    /* Coordinator master tells me (participant master) to abort */
-    case (CDB2_DIST__ABORT):
-        rcode = coordinator_aborted(disttxn->disttxn->txnid);
-        break;
-
-    /* Participant master tells me (coordinator master) it has propagated */
-    case (CDB2_DIST__PROPAGATED):
-        rcode = participant_propagated(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier);
-        break;
-    }
-
-sendresponse:
-    if (disttxn->disttxn->async) {
-        rd_hdr(-1, 0, appdata);
-        return;
-    }
-
-    response.rcode = rcode;
-    int len = cdb2__disttxnresponse__get_packed_size(&response);
-    struct newsqlheader hdr = {0};
-    hdr.type = htonl(RESPONSE_HEADER__DISTTXN_RESPONSE);
-    hdr.length = htonl(len);
-    uint8_t out[len];
-    cdb2__disttxnresponse__pack(&response, out);
-    evbuffer_add(buf, &hdr, sizeof(hdr));
-    evbuffer_add(buf, out, len);
-    event_base_once(appdata->base, appdata->fd, EV_WRITE, wr_dbinfo, appdata, NULL);
-}
-
 static void process_cdb2query(struct newsql_appdata_evbuffer *appdata, CDB2QUERY *query)
 {
     if (!query) {
         newsql_cleanup(appdata);
         return;
     }
-    CDB2DISTTXN *disttxn = query->disttxn;
     CDB2DBINFO *dbinfo = query->dbinfo;
-
-    if (!dbinfo && !disttxn) {
+    if (!dbinfo) {
         appdata->query = query;
         process_query(appdata);
         return;
     }
-    if (dbinfo) {
-        if (dbinfo->has_want_effects && dbinfo->want_effects) {
-            process_get_effects(appdata);
-        } else {
-            process_dbinfo(appdata);
-        }
-    }
-    if (disttxn) {
-        process_disttxn(appdata, disttxn);
+    if (dbinfo->has_want_effects && dbinfo->want_effects) {
+        process_get_effects(appdata);
+    } else {
+        process_dbinfo(appdata);
     }
     cdb2__query__free_unpacked(query, &pb_alloc);
 }
@@ -1078,6 +1025,9 @@ static int allow_admin(int local)
 
 static void newsql_setup_clnt_evbuffer(struct appsock_handler_arg *arg, int admin)
 {
+    if (!dispatch_base) {
+        dispatch_base = arg->base;
+    }
     int local = 0;
     if (arg->addr.sin_addr.s_addr == gbl_myaddr.s_addr) {
         local = 1;

@@ -64,7 +64,6 @@ extern int __berkdb_read_alarm_ms;
 #include "schemachange.h"
 #include "reverse_conn.h"
 #include "phys_rep.h"
-#include "disttxn.h"
 
 extern struct ruleset *gbl_ruleset;
 extern int gbl_exit_alarm_sec;
@@ -591,6 +590,7 @@ extern int gbl_fdb_track;
 extern int gbl_fdb_track_hints;
 extern unsigned long long release_locks_on_si_lockwait_cnt;
 extern int reset_blkmax(void);
+extern int reset_sequence(const char *table, const char *column, int64_t val);
 extern int gbl_new_snapisol;
 #ifdef NEWSI_STAT
 void bdb_print_logfile_pglogs_stat();
@@ -837,6 +837,43 @@ clipper_usage:
         free(tok);
         logmsg(LOGMSG_USER, "Trying to transfer master to node %s\n", newmaster->str);
         bdb_transfermaster_tonode(dbenv->static_table.handle, newmaster);
+    } else if (tokcmp(tok, ltok, "setseq") == 0) {
+        if (thedb->master != gbl_myhostname) {
+            logmsg(LOGMSG_USER, "Not the master node. \n");
+            return -1;
+        }
+        char *table = NULL, *column = NULL;
+        int64_t val;
+
+        /* table */
+        tok = segtok(line, lline, &st, &ltok);
+        if (!tok || ltok <= 0) {
+            logmsg(LOGMSG_ERROR, "setseq requires tablename\n");
+            return -1;
+        }
+        table = tokdup(tok, ltok);
+
+        /* column */
+        tok = segtok(line, lline, &st, &ltok);
+        if (!tok || ltok <= 0) {
+            logmsg(LOGMSG_ERROR, "setseq requires columnname\n");
+            free(table);
+            return -1;
+        }
+        column = tokdup(tok, ltok);
+
+        /* value */
+        tok = segtok(line, lline, &st, &ltok);
+        if (!tok || ltok <= 0) {
+            logmsg(LOGMSG_ERROR, "setseq requires value\n");
+            free(table);
+            free(column);
+            return -1;
+        }
+        val = (int64_t)toknumll(tok, ltok);
+        reset_sequence(table, column, val);
+        free(table);
+        free(column);
     } else if (tokcmp(tok, ltok, "synccluster") == 0) {
 
         int outrc = -1;
@@ -3369,12 +3406,6 @@ clipper_usage:
         } else {
             logmsg(LOGMSG_ERROR, "Expected <dist-txnid> 'commit', 'abort', or 'discard'\n");
         }
-    } else if (tokcmp(tok, ltok, "allow-coordinator") == 0) {
-        process_allow_coordinator(&line[st], lline - st);
-    } else if (tokcmp(tok, ltok, "forbid-coordinator") == 0) {
-        process_forbid_coordinator(&line[st], lline - st);
-    } else if (tokcmp(tok, ltok, "show-allowed-coordinators") == 0) {
-        show_allowed_coordinators();
     } else if (tokcmp(tok, ltok, "oldestgenids") == 0) {
         int i, stripe;
         void *buf = malloc(64 * 1024);

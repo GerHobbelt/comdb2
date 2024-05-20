@@ -2140,21 +2140,6 @@ static int _fdb_remote_reconnect(fdb_t *fdb, SBUF2 **psb, char *host, int use_ca
     return FDB_NOERR;
 }
 
-static char *fdb_generate_dist_txnid()
-{
-    uuid_t u;
-    uuidstr_t uuidstr;
-    comdb2uuid(u);
-    comdb2uuidstr(u, uuidstr);
-    int rc, sz = strlen(gbl_dbname) + 1 + sizeof(uuidstr_t) + 1;
-    char *r = calloc(sz, 1);
-    rc = snprintf(r, sz, "%s-%s", gbl_dbname, uuidstr);
-    if (rc >= sz) {
-        logmsg(LOGMSG_ERROR, "%s truncated dist-txnid\n", __func__);
-    }
-    return r;
-}
-
 /**
  * Used to either open a remote transaction or cursor (fdbc==NULL-> transaction
  *begin)
@@ -2265,18 +2250,8 @@ static int _fdb_send_open_retries(struct sqlclntstate *clnt, fdb_t *fdb,
                 else
                     tran_flags = 0;
 
-                if (clnt->use_2pc) {
-                    if (!clnt->dist_txnid) {
-                        clnt->dist_txnid = fdb_generate_dist_txnid();
-                    }
-                    char *coordinator_dbname = strdup(gbl_dbname);
-                    char *coordinator_tier = gbl_machine_class ? strdup(gbl_machine_class) : strdup(gbl_myhostname);
-                    char *dist_txnid = strdup(clnt->dist_txnid);
-                    rc = fdb_send_2pc_begin(msg, trans, clnt->dbtran.mode, tran_flags, dist_txnid, coordinator_dbname,
-                                            coordinator_tier, trans->sb);
-                } else {
-                    rc = fdb_send_begin(msg, trans, clnt->dbtran.mode, tran_flags, trans->sb);
-                }
+                rc = fdb_send_begin(msg, trans, clnt->dbtran.mode, tran_flags,
+                                    trans->sb);
                 if (rc == FDB_NOERR) {
                     trans->host = host;
                 }
@@ -2647,7 +2622,8 @@ static int fdb_cursor_close(BtCursor *pCur)
 }
 
 static char *_build_run_sql_from_hint(BtCursor *pCur, Mem *m, int ncols,
-                                      int bias, int *p_sqllen, int *error)
+                                      int bias, int *p_sqllen, int *error,
+                                      int at_least_one)
 {
     fdb_cursor_t *fdbc = pCur->fdbc->impl;
     char *tableName = NULL;
@@ -2693,12 +2669,31 @@ static char *_build_run_sql_from_hint(BtCursor *pCur, Mem *m, int ncols,
     }
 
     if (whereDesc || hasCondition) {
-        sql = sqlite3_mprintf("SELECT %s%srowid FROM \"%w\" WHERE %s%s%s",
-                 (columnsDesc) ? columnsDesc : ((using_col_filter) ? "" : "*"),
-                 (columnsDesc) ? ", " : ((using_col_filter) ? "" : ", "),
-                 tableName, whereDesc ? whereDesc : "",
-                 (whereDesc != NULL && hasCondition) ? " AND " : "",
-                 orderDesc ? orderDesc : "");
+        char * single_select;
+        char * where_pred;
+        single_select = sqlite3_mprintf("SELECT %s%srowid FROM \"%w\"", 
+                    (columnsDesc) ? columnsDesc : ((using_col_filter) ? "" : "*"),
+                    (columnsDesc) ? ", " : ((using_col_filter) ? "" : ", "),
+                    tableName);
+        where_pred = sqlite3_mprintf("%s%s%s",
+                whereDesc ? whereDesc : "",
+                (whereDesc != NULL && hasCondition) ? " AND " : "",
+                orderDesc ? orderDesc : "");
+        if (at_least_one)
+            /* NOTE: in the rare case when this is a data cursor Rewind (i.e. CFIRST)
+             * since there is a predicate, we need to make sure at least one row is
+             * return, even if it does not match the predicate, if it exists, otherwise
+             * sqlite will believe the table is empty and will stop looking for other 
+             * keys (like, in a join)
+             */
+            sql = sqlite3_mprintf("%s WHERE %s union select * from (%s limit 1)",
+                    single_select, where_pred, single_select);
+        else {
+            sql = sqlite3_mprintf("%s WHERE %s",
+                    single_select, where_pred);
+        }
+        sqlite3_free(single_select);
+        sqlite3_free(where_pred);
     } else {
         sql = sqlite3_mprintf("SELECT %s%srowid FROM \"%w\"%s",
                  (columnsDesc) ? columnsDesc : ((using_col_filter) ? "" : "*"),
@@ -3043,8 +3038,9 @@ retry:
                 }
             } else {
                 sql = _build_run_sql_from_hint(
-                    pCur, NULL, 0, (how == CLAST) ? OP_Prev : OP_Next, &sqllen,
-                    &error);
+                    pCur, NULL, 0, (how == CLAST) ? OP_Prev : OP_Next, &sqllen, &error,
+                    /* is this a Rewind on a data cursor ? */
+                    how == CFIRST && fdbc->ent && fdbc->ent->ixnum < 0);
             }
 
             if (!sql) {
@@ -3221,7 +3217,7 @@ version_retry:
                 sqllen = strlen(sql) + 1;
             } else {
                 sql = _build_run_sql_from_hint(pCur, key, nfields, bias,
-                                               &sqllen, &error);
+                                               &sqllen, &error, 0);
             }
         }
 
@@ -3908,8 +3904,6 @@ static void _free_fdb_tran(fdb_distributed_tran_t *dtran, fdb_tran_t *tran)
     disable_fdb_heartbeats_and_free(&tran->hbeats);
 }
 
-extern char gbl_dbname[];
-
 int fdb_trans_commit(struct sqlclntstate *clnt, enum trans_clntcomm sideeffects)
 {
     fdb_distributed_tran_t *dtran = clnt->dbtran.dtran;
@@ -3935,11 +3929,9 @@ int fdb_trans_commit(struct sqlclntstate *clnt, enum trans_clntcomm sideeffects)
         return FDB_ERR_MALLOC;
     }
 
-    Pthread_mutex_lock(&clnt->dtran_mtx);
+    /* TODO: here we replace the trivial 2PC with the actual thing */
 
-    if (clnt->use_2pc && listc_size(&dtran->fdb_trans) > 0) {
-        clnt->is_coordinator = 1;
-    }
+    Pthread_mutex_lock(&clnt->dtran_mtx);
 
     LISTC_FOR_EACH(&dtran->fdb_trans, tran, lnk)
     {
@@ -3954,35 +3946,31 @@ int fdb_trans_commit(struct sqlclntstate *clnt, enum trans_clntcomm sideeffects)
             continue;
 
         rc = fdb_send_commit(msg, tran, clnt->dbtran.mode, tran->sb);
-        if (clnt->use_2pc && !rc) {
-            const char *tier = fdb_dbname_class_routing(tran->fdb);
-            if ((rc = add_participant(clnt, tran->fdb->dbname, tier)) != 0) {
-                tran->errstr = strdup("multiple participants with same dbname");
-                break;
-            }
-        }
+
         if (gbl_fdb_track)
-            logmsg(LOGMSG_USER, "%s Send Commit tid=%llx db=\"%s\" rc=%d\n", __func__, *(unsigned long long *)tran->tid,
-                   tran->fdb->dbname, rc);
+            logmsg(LOGMSG_USER, "%s Send Commit tid=%llx db=\"%s\" rc=%d\n",
+                    __func__, *(unsigned long long *)tran->tid,
+                    tran->fdb->dbname, rc);
     }
 
-    if (!clnt->dist_txnid) {
-        LISTC_FOR_EACH(&dtran->fdb_trans, tran, lnk)
-        {
-            if (sideeffects == TRANS_CLNTCOMM_CHUNK && tran->nwrites == 0)
-                continue;
+    LISTC_FOR_EACH(&dtran->fdb_trans, tran, lnk)
+    {
+        if (sideeffects == TRANS_CLNTCOMM_CHUNK && tran->nwrites == 0)
+            continue;
 
-            rc = fdb_recv_rc(msg, tran);
+        rc = fdb_recv_rc(msg, tran);
 
-            if (gbl_fdb_track) {
-                uuidstr_t us;
-                logmsg(LOGMSG_USER, "%s Commit RC=%d tid=%s db=\"%s\"\n", __func__, rc,
-                       comdb2uuidstr((unsigned char *)tran->tid, us), tran->fdb->dbname);
-            }
+        if (gbl_fdb_track) {
+            uuidstr_t us;
+            logmsg(LOGMSG_USER, "%s Commit RC=%d tid=%s db=\"%s\"\n",
+                   __func__, rc,
+                   comdb2uuidstr((unsigned char *)tran->tid, us),
+                   tran->fdb->dbname);
+        }
 
-            if (rc) {
-                break;
-            }
+        if (rc) {
+            /* rollback all in 2PC here */
+            break;
         }
     }
 
@@ -5051,12 +5039,9 @@ int fdb_validate_existing_table(const char *zDatabase)
     int local;
     int cls;
 
-    /* This points dbName at 'name' portion of zDatabase */
     cls = get_fdb_class(&dbName, &local, NULL);
 
     Pthread_rwlock_rdlock(&fdbs.arr_lock);
-
-    /* This searches only by 'name' (so no duplicate dbnames across classes) */
     fdb = __cache_fnd_fdb(dbName, NULL);
     if (fdb) {
         rc = _validate_existing_table(fdb, cls, local);

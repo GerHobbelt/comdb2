@@ -367,7 +367,7 @@ Description:
 
 `cdb2_bind_array` is also used to bind an array of values passed to a stored procedure (without the `carray` keyword.) The `main` function in the procedure will receive a Lua array with corresponding values for every array parameter.
 
-`cdb2_bind_array` supports binding CDB2_INTEGER, CDB2_REAL, CDB2_CSTRING and CDB2_BLOB values. The maximum number of elements in the array is `INT16_MAX`. The pointer `varaddr` accepts following types: `int32_t *` (or `int64_t *`) for `CDB2_INTEGER`, `double *` for `CDB2_REAL` and `char **` for `CDB2_STRING`. For `CDB2_BLOB`, the pointer should point to array of structures defined as:
+`cdb2_bind_array` supports binding CDB2_INTEGER, CDB2_REAL, CDB2_CSTRING and CDB2_BLOB values. The maximum number of elements in the array is `CDB2_MAX_BIND_ARRAY` = `INT16_MAX` as defined in cdb2api.h. The pointer `varaddr` accepts following types: `int32_t *` (or `int64_t *`) for `CDB2_INTEGER`, `double *` for `CDB2_REAL` and `char **` for `CDB2_STRING`. For `CDB2_BLOB`, the pointer should point to array of structures defined as:
 
 ```c
 struct {
@@ -386,7 +386,7 @@ int arr[10] = {1,2,3,4...};
 cdb2_bind_array(hndl, "arr", CDB2_INTEGER, arr, 10, sizeof(int));
 
 //Run the SQL statement:
-cdb2_run_statement(db, "SELECT * FROM a WHERE i IN CARRAY(@arr)”);
+cdb2_run_statement(db, "SELECT * FROM a WHERE i IN CARRAY(@arr)");
 
 
 //Pass multiple arrays:
@@ -394,13 +394,13 @@ int64_t ids0[] = {...};
 int64_t ids1[] = {...};
 cdb2_bind_array(hndl, "arr0", CDB2_INTEGER, ids0, count0, sizeof(int64_t));
 cdb2_bind_array(hndl, "arr1", CDB2_INTEGER, ids1, count1, sizeof(int64_t));
-cdb2_run_statement(db, "SELECT * FROM a WHERE id IN CARRAY(@arr0) UNION SELECT * FROM b WHERE id IN CARRAY(@arr1)”);
+cdb2_run_statement(db, "SELECT * FROM a WHERE id IN CARRAY(@arr0) UNION SELECT * FROM b WHERE id IN CARRAY(@arr1)");
 
 
 //bind cstrings:
 char *strs[] = {"hello", "world"};
 cdb2_bind_array(hndl, "strings", CDB2_CSTRING, strs, 2, 0);
-cdb2_run_statement(db, `INSERT INTO b SELECT * FROM CARRAY(@strings)`.
+cdb2_run_statement(db, "INSERT INTO b SELECT * FROM CARRAY(@strings)");
 
 
 //bind blobs:

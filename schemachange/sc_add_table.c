@@ -116,8 +116,8 @@ int add_table_to_environment(char *table, const char *csc2,
 
     struct errstat err = {0};
     newdb = create_new_dbtable(thedb, table, (char *)csc2, 0 /*dbnum*/,
-                               thedb->num_dbs, 0 /*no altname*/,
-                               timepartition_name ? 1 : 0 /* allow null if tpt rollout */, 
+                               0 /*no altname*/,
+                               timepartition_name ? 1 : 0 /* allow null if tpt rollout */,
                                0 /* side effects */, &err);
     if (!newdb) {
         sc_client_error(s, "%s", err.errstr);
@@ -307,7 +307,7 @@ int finalize_add_table(struct ireq *iq, struct schema_change_type *s,
         sc_errf(s, "Failed to add db to thedb->dbs, rc %d\n", rc);
         return rc;
     }
-    s->add_state = SC_DONE_ADD; /* done adding to thedb->dbs */
+    s->already_finalized = 1; /* done adding to thedb->dbs */
 
     if ((rc = set_header_and_properties(tran, db, s, 0, gbl_init_with_bthash)))
         return rc;

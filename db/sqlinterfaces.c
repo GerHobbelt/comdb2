@@ -965,14 +965,14 @@ int validate_columns(struct sqlclntstate *clnt, sqlite3_stmt *stmt)
 }
 
 int get_sqlite3_column_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt,
-                            int col, int skip_decltype, int non_null_type)
+                            int col, int skip_decltype)
 {
     int type = SQLITE_NULL;
     int ncols = column_count(clnt, stmt);
 
     if (sqlite3_can_get_column_type_and_data(clnt, stmt)) {
         int colNum = col;
-        if (clnt->typessql_state && non_null_type)
+        if (clnt->typessql_state && !skip_decltype)
             colNum += ncols;
         type = column_type(clnt, stmt, colNum);
         if (type == SQLITE_NULL && !skip_decltype) {
@@ -988,7 +988,7 @@ int get_sqlite3_column_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt,
 int is_column_type_null(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int col)
 {
     if (!clnt->fdb_push) {
-        return get_sqlite3_column_type(clnt, stmt, col, 1, 0) == SQLITE_NULL ||
+        return get_sqlite3_column_type(clnt, stmt, col, 1) == SQLITE_NULL ||
                column_type(clnt, stmt, col) == SQLITE_NULL;
     }
 
@@ -1825,7 +1825,7 @@ int gbl_snapshot_serial_verify_retry = 1;
 
 inline int replicant_is_able_to_retry(struct sqlclntstate *clnt)
 {
-    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp || clnt->is_participant)
+    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp)
         return 0;
 
     if ((clnt->dbtran.mode == TRANLEVEL_SNAPISOL ||
@@ -1839,7 +1839,7 @@ inline int replicant_is_able_to_retry(struct sqlclntstate *clnt)
 
 static inline int replicant_can_retry_rc(struct sqlclntstate *clnt, int rc)
 {
-    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp || clnt->is_participant)
+    if (clnt->verifyretry_off || clnt->dbtran.trans_has_sp)
         return 0;
 
     /* Any isolation level can retry if nothing has been read */
@@ -1862,12 +1862,12 @@ static int free_clnt_ddl_context(void *obj, void *arg)
     free(ctx);
     return 0;
 }
-static int free_it(void *obj, void *arg)
+int free_it(void *obj, void *arg)
 {
     free(obj);
     return 0;
 }
-static inline void destroy_hash(hash_t *h, int (*free_func)(void *, void *))
+void destroy_hash(hash_t *h, int (*free_func)(void *, void *))
 {
     if (!h)
         return;
@@ -1937,7 +1937,6 @@ static int do_commitrollback(struct sqlthdstate *thd, struct sqlclntstate *clnt,
         rc = SQLITE_OK;
     } else {
         clear_session_tbls(clnt);
-        clear_participants(clnt);
         sql_debug_logf(clnt, __func__, __LINE__, "starting\n");
 
         switch (clnt->dbtran.mode) {
@@ -5210,23 +5209,6 @@ void cleanup_clnt(struct sqlclntstate *clnt)
         free(clnt->saved_errstr);
         clnt->saved_errstr = NULL;
     }
-    if (clnt->dist_txnid) {
-        free(clnt->dist_txnid);
-        clnt->dist_txnid = NULL;
-    }
-    if (clnt->coordinator_dbname) {
-        free(clnt->coordinator_dbname);
-        clnt->coordinator_dbname = NULL;
-    }
-    if (clnt->coordinator_tier) {
-        free(clnt->coordinator_tier);
-        clnt->coordinator_tier = NULL;
-    }
-    if (clnt->coordinator_master) {
-        free(clnt->coordinator_master);
-        clnt->coordinator_master = NULL;
-    }
-
     clnt->sqlite_errstr = NULL;
     if (clnt->context) {
         for (int i = 0; i < clnt->ncontext; i++) {
@@ -5300,20 +5282,19 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
         Pthread_mutex_init(&clnt->sql_tick_lk, NULL);
         Pthread_mutex_init(&clnt->sql_lk, NULL);
         TAILQ_INIT(&clnt->session_tbls);
-        listc_init(&clnt->participants, offsetof(struct participant, linkv));
     } else {
-        clnt->sql_since_reset = 0;
-        clnt->num_resets++;
-        clnt->last_reset_time = comdb2_time_epoch();
-        clnt_change_state(clnt, CONNECTION_RESET);
-        clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
-        if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
-            if (gbl_unexpected_last_type_warn)
-                logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n", clnt->lastresptype,
-                       clnt->origin, clnt->argv0);
-            if (gbl_unexpected_last_type_abort)
-                abort();
-        }
+       clnt->sql_since_reset = 0;
+       clnt->num_resets++;
+       clnt->last_reset_time = comdb2_time_epoch();
+       clnt_change_state(clnt, CONNECTION_RESET);
+       clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
+       if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
+           if (gbl_unexpected_last_type_warn)
+               logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n",
+                      clnt->lastresptype, clnt->origin, clnt->argv0);
+           if (gbl_unexpected_last_type_abort)
+               abort();
+       }
     }
 
     clnt->pPool = NULL; /* REDUNDANT? */
@@ -5397,15 +5378,6 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     clnt->snapshot = 0;
     clnt->num_retry = 0;
     clnt->early_retry = 0;
-
-    clnt->use_2pc = 0;
-    clnt->is_coordinator = 0;
-    clnt->is_participant = 0;
-    clear_participants(clnt);
-    if (clnt->dist_txnid) {
-        free(clnt->dist_txnid);
-        clnt->dist_txnid = NULL;
-    }
 
     clear_session_tbls(clnt);
 

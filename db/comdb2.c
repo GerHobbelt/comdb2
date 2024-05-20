@@ -70,7 +70,6 @@ void berk_memp_sync_alarm_ms(int);
 
 #include <net.h>
 #include <bdb_api.h>
-#include <disttxn.h>
 #include <sbuf2.h>
 #include "quantize.h"
 #include "timers.h"
@@ -884,14 +883,6 @@ static inline void _db_hash_del(dbtable *tbl)
         hash_del(thedb->sqlalias_hash, tbl);
 }
 
-/* lockless -- thedb_lock should be gotten from caller */
-int getdbidxbyname_ll(const char *p_name)
-{
-    dbtable *tbl = _db_hash_find(p_name);
-
-    return (tbl) ? tbl->dbs_idx : -1;
-}
-
 /* get the index offset of table tablename in thedb->dbs array
  * notice that since the caller does not hold the lock, accessing
  * thedb->dbs[idx] can result in undefined behavior if that table
@@ -899,10 +890,8 @@ int getdbidxbyname_ll(const char *p_name)
  */
 int get_dbtable_idx_by_name(const char *tablename)
 {
-    Pthread_rwlock_rdlock(&thedb_lock);
-    int idx = getdbidxbyname_ll(tablename);
-    Pthread_rwlock_unlock(&thedb_lock);
-    return idx;
+    struct dbtable *table = get_dbtable_by_name(tablename);
+    return table ? table->dbs_idx : -1;
 }
 
 dbtable *get_dbtable_by_name(const char *p_name)
@@ -2327,8 +2316,8 @@ static int llmeta_load_tables(struct dbenv *dbenv, void *tran)
         }
 
         struct errstat err = {0};
-        tbl = create_new_dbtable(dbenv, tblnames[i], csc2text, dbnums[i], i, 0,
-                                 0, 0, &err);
+        tbl = create_new_dbtable(dbenv, tblnames[i], csc2text, dbnums[i], 0, 0,
+                                 0, &err);
         free(csc2text);
         csc2text = NULL;
         if (!tbl) {
@@ -2355,6 +2344,7 @@ static int llmeta_load_tables(struct dbenv *dbenv, void *tran)
          */
 
         /* add to env */
+        tbl->dbs_idx = i;
         dbenv->dbs[i] = tbl;
         /* Add table to the hash. */
         _db_hash_add(tbl);
@@ -3318,7 +3308,7 @@ static int init_sqlite_tables(struct dbenv *dbenv)
 
         tbl = create_new_dbtable(dbenv, (char *)sqlite_stats_name[i],
                                  (char *)sqlite_stats_csc2[i], 0,
-                                 dbenv->num_dbs, 0, 0, 0, &err);
+                                 0, 0, 0, &err);
         if (!tbl) {
             logmsg(LOGMSG_ERROR, "%s\n", err.errstr);
             return -1;
@@ -3331,6 +3321,7 @@ static int init_sqlite_tables(struct dbenv *dbenv)
         /* Add table to thedb->dbs */
         dbenv->dbs =
             realloc(dbenv->dbs, (dbenv->num_dbs + 1) * sizeof(dbtable *));
+        tbl->dbs_idx = dbenv->num_dbs;
         dbenv->dbs[dbenv->num_dbs++] = tbl;
     }
     return 0;
@@ -3870,8 +3861,6 @@ static int init(int argc, char **argv)
 
     if (gbl_berkdb_iomap) 
         bdb_berkdb_iomap_set(thedb->bdb_env, 1);
-
-    disttxn_init();
 
     if (!gbl_exit && gbl_new_snapisol && gbl_snapisol) {
         bdb_attr_set(thedb->bdb_attr, BDB_ATTR_PAGE_ORDER_TABLESCAN, 0);
@@ -5795,13 +5784,20 @@ int rename_db(dbtable *db, const char *newname)
     return 0;
 }
 
-void replace_db_idx(dbtable *p_db, int idx)
+/* this is important when we remove a table from array as part of a
+ * finalize_drop_table and later on (constraint check, other finalize)
+ * transaction needs to unroll;  we reconstructed a "table" to match
+ * the dropped table and we need to insert it in the previous index
+ * location
+ */
+void re_add_dbtable_to_thedb_dbs(dbtable *table)
 {
     int move = 0;
+    int idx = table->dbs_idx;
     Pthread_rwlock_wrlock(&thedb_lock);
 
     if (idx < 0 || idx >= thedb->num_dbs ||
-        strcasecmp(thedb->dbs[idx]->tablename, p_db->tablename) != 0) {
+        strcasecmp(thedb->dbs[idx]->tablename, table->tablename) != 0) {
         thedb->dbs =
             realloc(thedb->dbs, (thedb->num_dbs + 1) * sizeof(dbtable *));
         if (idx < 0 || idx >= thedb->num_dbs) idx = thedb->num_dbs;
@@ -5814,14 +5810,13 @@ void replace_db_idx(dbtable *p_db, int idx)
         thedb->dbs[i]->dbs_idx = i;
     }
 
-    if (!move) p_db->dbnum = thedb->dbs[idx]->dbnum;
+    if (!move) table->dbnum = thedb->dbs[idx]->dbnum;
 
-    p_db->dbs_idx = idx;
-    thedb->dbs[idx] = p_db;
+    thedb->dbs[idx] = table;
 
     /* Add table to the hash. */
     if (move == 1) {
-        _db_hash_add(p_db);
+        _db_hash_add(table);
     }
 
     Pthread_rwlock_unlock(&thedb_lock);
@@ -5896,6 +5891,8 @@ void epoch2a(int epoch, char *buf, size_t buflen)
     }
 }
 
+int gbl_reproduce_sequence_corruption = 0;
+
 /* store our schemas in meta */
 static int put_all_csc2()
 {
@@ -5917,7 +5914,11 @@ static int put_all_csc2()
                 return -1;
             }
 
-            rc = init_table_sequences(NULL, NULL, thedb->dbs[ii]);
+            if (gbl_reproduce_sequence_corruption) {
+                logmsg(LOGMSG_USER, "%s reproducing table sequence corruption\n", __func__);
+            } else {
+                rc = init_table_sequences(NULL, NULL, thedb->dbs[ii]);
+            }
         }
     }
 

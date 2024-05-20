@@ -36,6 +36,7 @@ extern int gbl_disable_skip_rows;
 extern int gbl_return_long_column_names;
 extern int gbl_typessql;
 extern int gbl_incoherent_clnt_wait;
+extern int gbl_new_leader_duration;
 
 struct newsql_appdata {
     NEWSQL_APPDATA_COMMON
@@ -343,7 +344,7 @@ static int newsql_send_hdr(struct sqlclntstate *clnt, int h, int s)
 }
 
 static int get_col_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int col,
-                        int check_protocol_version, int non_null_type)
+                        int check_protocol_version)
 {
     struct newsql_appdata *appdata = clnt->appdata;
     CDB2SQLQUERY *sql_query = appdata->sqlquery;
@@ -354,7 +355,7 @@ static int get_col_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int col,
             type = SQLITE_TEXT;
         }
     } else if (stmt) {
-        type = get_sqlite3_column_type(clnt, stmt, col, 0, non_null_type);
+        type = get_sqlite3_column_type(clnt, stmt, col, 0);
         if ((check_protocol_version == 1 && appdata->protocol_version == 1 /* fastsql */) ||
             type == SQLITE_NULL) {
             type = typestr_to_type(sqlite3_column_decltype(stmt, col));
@@ -391,7 +392,7 @@ static int newsql_columns(struct sqlclntstate *clnt, sqlite3_stmt *stmt)
         cols[i].value.data = (uint8_t *)name;
         cols[i].value.len = len;
         cols[i].has_type = 1;
-        cols[i].type = appdata->col_info.type[i] = get_col_type(clnt, stmt, i, 1, clnt->typessql_state != NULL);
+        cols[i].type = appdata->col_info.type[i] = get_col_type(clnt, stmt, i, 1);
     }
     CDB2SQLRESPONSE resp = CDB2__SQLRESPONSE__INIT;
     resp.response_type = RESPONSE_TYPE__COLUMN_NAMES;
@@ -448,7 +449,7 @@ static int newsql_columns_lua(struct sqlclntstate *clnt,
         cols[i].value.len = len;
         cols[i].has_type = 1;
         cols[i].type = appdata->col_info.type[i] =
-            sp_column_type(arg, i, n_types, get_col_type(clnt, stmt, i, 0, 0));
+            sp_column_type(arg, i, n_types, get_col_type(clnt, stmt, i, 0));
     }
     clnt->osql.sent_column_data = 1;
     CDB2SQLRESPONSE resp = CDB2__SQLRESPONSE__INIT;
@@ -2043,7 +2044,7 @@ int leader_is_new(void)
     struct timeval now, diff;
     gettimeofday(&now, NULL);
     timersub(&now, &last_elect_time, &diff);
-    return diff.tv_sec == 0; // considered new if less than 1sec
+    return diff.tv_sec < gbl_new_leader_duration;
 }
 
 newsql_loop_result newsql_loop(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)

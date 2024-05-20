@@ -134,15 +134,11 @@ enum {
 #define MAXNULLBITS (MAXCOLUMNS / 8)
 
 enum SYNC_FLAGS {
-    REP_SYNC_FULL = 0 /* run asynchronously */
-    ,
-    REP_SYNC_SOURCE = 1 /* source node only is synchronized before ack */
-    ,
-    REP_SYNC_NONE = 2 /* all nodes are sync'd before ack */
-    ,
-    REP_SYNC_ROOM = 3 /* sync to nodes in my machine room */
-    ,
-    REP_SYNC_N = 4 /* wait for N machines */
+    REP_SYNC_FULL = 0,   /* all nodes are sync'd before ack */
+    REP_SYNC_SOURCE = 1, /* source node only is synchronized before ack */
+    REP_SYNC_NONE = 2,   /* run asynchronously */
+    REP_SYNC_ROOM = 3,   /* sync to nodes in my machine room */
+    REP_SYNC_N = 4       /* wait for N machines */
 };
 
 enum OPCODES {
@@ -1183,18 +1179,6 @@ typedef struct bpfunc_lstnode {
 } bpfunc_lstnode_t;
 
 typedef LISTC_T(bpfunc_lstnode_t) bpfunc_list_t;
-
-struct participant {
-    char *participant_name;
-    char *participant_tier;
-    char *participant_master;
-    time_t last_heartbeat;
-    int status;
-    LINKC_T(struct participant) linkv;
-};
-
-typedef LISTC_T(struct participant) participant_list_t;
-
 /*******************************************************************/
 
 enum OSQL_REQ_TYPE {
@@ -1268,21 +1252,6 @@ struct osql_sess {
     int is_tranddl;
     int is_tptlock;   /* needs tpt locking */
     int is_cancelled; /* 1 if session is cancelled */
-
-    /* 2pc maintained in session */
-    unsigned is_participant : 1;
-    unsigned is_coordinator : 1;
-
-    char *dist_txnid;
-    char *coordinator_dbname;
-    char *coordinator_tier;
-    char *coordinator_master;
-    participant_list_t participants;
-
-    /* these are set asynchronously */
-    pthread_mutex_t participant_lk;
-    int is_done;
-    int is_sanctioned; /* set by fdb from coordinator-master */
 };
 typedef struct osql_sess osql_sess_t;
 
@@ -1329,9 +1298,6 @@ struct ireq {
     int luxref;
     uint8_t osql_rowlocks_enable;
     uint8_t osql_genid48_enable;
-
-    int commit_file;
-    int commit_offset;
 
     /************/
     /* REGION 2 */
@@ -1386,6 +1352,12 @@ struct ireq {
     /* Support for //DBSTATS. */
     SBUF2 *dbglog_file;
     int *nwrites;
+
+    /* List of indices that we've written to detect uncommitable upsert txns */
+    hash_t *vfy_idx_hash; 
+
+    int dup_key_insert;
+
     /* List of genids that we've written to detect uncommitable txn's */
     hash_t *vfy_genid_hash;
     pool_t *vfy_genid_pool;
@@ -1453,6 +1425,7 @@ struct ireq {
 
     unsigned errstrused : 1;
     unsigned vfy_genid_track : 1;
+    unsigned vfy_idx_track : 1;
     unsigned have_blkseq : 1;
 
     unsigned sc_locked : 1;
@@ -2112,10 +2085,10 @@ tran_type *trans_start_readcommitted(struct ireq *, int trak);
 tran_type *trans_start_serializable(struct ireq *, int trak, int epoch,
                                     int file, int offset, int *error,
                                     int is_ha_retry);
-tran_type *trans_start_snapisol(struct ireq *, int trak, int epoch, int file, int offset, int *error, int is_ha_retry);
+tran_type *trans_start_snapisol(struct ireq *, int trak, int epoch, int file,
+                                int offset, int *error, int is_ha_retry);
 tran_type *trans_start_socksql(struct ireq *, int trak);
 int trans_commit(struct ireq *iq, void *trans, char *source_host);
-int trans_commit_nowait(struct ireq *iq, void *trans, char *source_host);
 int trans_commit_seqnum(struct ireq *iq, void *trans, db_seqnum_type *seqnum);
 int trans_commit_adaptive(struct ireq *iq, void *trans, char *source_host);
 int trans_commit_logical(struct ireq *iq, void *trans, char *source_host,
@@ -2125,7 +2098,6 @@ int trans_abort(struct ireq *iq, void *trans);
 int trans_abort_priority(struct ireq *iq, void *trans, int *priority);
 int trans_abort_logical(struct ireq *iq, void *trans, void *blkseq, int blklen,
                         void *blkkey, int blkkeylen);
-int trans_discard_prepared(struct ireq *iq, void *trans);
 int trans_wait_for_seqnum(struct ireq *iq, char *source_host,
                           db_seqnum_type *ss);
 int trans_wait_for_last_seqnum(struct ireq *iq, char *source_host);
@@ -2446,9 +2418,9 @@ struct dbtable *newqdb(struct dbenv *env, const char *name, int avgsz, int pages
 int add_queue_to_environment(char *table, int avgitemsz, int pagesize);
 void stop_threads(struct dbenv *env);
 void resume_threads(struct dbenv *env);
-void replace_db_idx(struct dbtable *p_db, int idx);
 int add_dbtable_to_thedb_dbs(dbtable *table);
 void rem_dbtable_from_thedb_dbs(dbtable *table);
+void re_add_dbtable_to_thedb_dbs(dbtable *table);
 void hash_sqlalias_db(dbtable *db, const char *newname);
 int rename_db(struct dbtable *db, const char *newname);
 int ix_find_rnum_by_recnum(struct ireq *iq, int recnum_in, int ixnum,
@@ -2801,14 +2773,15 @@ enum {
     RECFLAGS_DONT_SKIP_BLOBS = 1 << 7,
     RECFLAGS_ADD_FROM_SC_LOGICAL = 1 << 8,
     /* used for upgrade record */
-    RECFLAGS_UPGRADE_RECORD = RECFLAGS_DYNSCHEMA_NULLS_ONLY | RECFLAGS_KEEP_GENID | RECFLAGS_NO_TRIGGERS |
-                              RECFLAGS_NO_CONSTRAINTS | RECFLAGS_NO_BLOBS | 1 << 9,
+    RECFLAGS_UPGRADE_RECORD = RECFLAGS_DYNSCHEMA_NULLS_ONLY |
+                              RECFLAGS_KEEP_GENID | RECFLAGS_NO_TRIGGERS |
+                              RECFLAGS_NO_CONSTRAINTS | RECFLAGS_NO_BLOBS |
+                              1 << 9,
     RECFLAGS_IN_CASCADE = 1 << 10,
     RECFLAGS_DONT_LOCK_TBL = 1 << 11,
     RECFLAGS_COMDBG_FROM_LE = 1 << 12,
-    RECFLAGS_INLINE_CONSTRAINTS = 1 << 13,
 
-    RECFLAGS_MAX = 1 << 13
+    RECFLAGS_MAX = 1 << 12
 };
 
 /* flag codes */
@@ -3578,7 +3551,6 @@ int compare_tag_int(struct schema *old, struct schema *new, FILE *out,
                     int strict);
 int cmp_index_int(struct schema *oldix, struct schema *newix, char *descr,
                   size_t descrlen);
-int getdbidxbyname_ll(const char *p_name);
 int get_dbtable_idx_by_name(const char *tablename);
 int open_temp_db_resume(struct ireq *iq, struct dbtable *db, char *prefix, int resume,
                         int temp, tran_type *tran);

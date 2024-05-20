@@ -343,3 +343,37 @@ INSERT OR IGNORE INTO t1 VALUES(3,2) ON CONFLICT(i) DO UPDATE SET j=j+10;
 SELECT * FROM t1 ORDER BY 1;
 
 DROP TABLE t1;
+
+SELECT '---- DRQS#173941100 ----';
+CREATE TABLE t1(i INT UNIQUE, j INT)$$
+INSERT OR REPLACE INTO t1 VALUES(1,1);
+
+SET TRANSACTION BLOCKSQL;
+BEGIN;
+INSERT OR REPLACE INTO t1 VALUES(1,1);
+COMMIT;
+SELECT * FROM t1;
+DROP TABLE t1;
+
+SELECT '---- DRQS#173983147 ----';
+CREATE TABLE t1(i INT, j INT, UNIQUE(i), INDEX(j))$$
+INSERT INTO t1 VALUES(1,1);
+INSERT OR REPLACE INTO t1 VALUES(2,1);
+SELECT COUNT(*)=2 FROM t1;
+SELECT * FROM t1 ORDER BY 1;
+DROP TABLE t1;
+
+SELECT '---- uncommittable + constraints ----';
+CREATE TABLE m {schema{int i} keys{"pk" = i}}$$
+CREATE TABLE c {schema{int i} keys{"key" = i} constraints{"key" -> <"m" : "pk">}}$$
+BEGIN;
+INSERT INTO m(i) VALUES(1);
+INSERT INTO m(i) VALUES(2);
+COMMIT;
+BEGIN;
+INSERT INTO c(i) VALUES(1) ON CONFLICT(i) DO UPDATE SET i=2;
+INSERT INTO c(i) VALUES(1) ON CONFLICT(i) DO UPDATE SET i=2;
+COMMIT;
+SELECT 1 FROM comdb2_metrics m, comdb2_tunables t WHERE m.name LIKE 'verify_replays' AND t.name='osql_verify_retry_max' AND m.value >= CAST(t.value AS int)
+DROP TABLE c;
+DROP TABLE m;
