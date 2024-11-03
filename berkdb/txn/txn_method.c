@@ -32,7 +32,7 @@ static const char revid[] = "$Id: txn_method.c,v 11.66 2003/06/30 17:20:30 bosti
 #endif
 
 #include "logmsg.h"
-#include <locks_wrap.h>
+#include <sys_wrap.h>
 
 static int __txn_get_tx_max __P((DB_ENV *, u_int32_t *));
 static int __txn_get_tx_timestamp __P((DB_ENV *, time_t *));
@@ -144,12 +144,14 @@ __txn_dbenv_create(dbenv)
 		dbenv->set_logical_commit = __txn_set_logical_commit;
 		dbenv->txn_begin_with_prop = __txn_begin_with_prop_pp;
 		dbenv->collect_prepared = __txn_prepared_collect_pp;
-        dbenv->txn_commit_recovered = __txn_commit_recovered_pp;
-        dbenv->txn_abort_recovered = __txn_abort_recovered_pp;
-        dbenv->txn_discard_recovered = __txn_discard_recovered_pp;
-        dbenv->txn_discard_all_recovered = __txn_discard_all_recovered_pp;
-        dbenv->txn_upgrade_all_prepared = __txn_upgrade_all_prepared;
-        dbenv->txn_abort_prepared_waiters = __txn_abort_prepared_waiters;
+		dbenv->set_recover_prepared_callback = __txn_set_recover_prepared_callback;
+		dbenv->txn_commit_recovered = __txn_commit_recovered_pp;
+		dbenv->txn_abort_recovered = __txn_abort_recovered_pp;
+		dbenv->txn_discard_recovered = __txn_discard_recovered_pp;
+		dbenv->txn_discard_all_recovered = __txn_discard_all_recovered_pp;
+		dbenv->txn_upgrade_all_prepared = __txn_upgrade_all_prepared;
+		dbenv->txn_recover_all_prepared = __txn_recover_all_prepared;
+		dbenv->txn_abort_prepared_waiters = __txn_abort_prepared_waiters;
 	}
 
 	/* If we lazily initialize the key in __txn_begin(), Operations outside

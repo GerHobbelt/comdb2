@@ -27,10 +27,6 @@
 #include <bb_oscompat.h>
 
 #include <comdb2.h>
-#if defined(_IBM_SOURCE)
-#include <openssl/objects.h>
-#include <openssl/ec.h>
-#endif
 
 #include <zlib.h>
 
@@ -894,6 +890,7 @@ void eventlog_debug(char *fmt, ...) {
     Pthread_mutex_lock(&eventlog_lk);
     cson_output(vobj, write_json, eventlog);
     Pthread_mutex_unlock(&eventlog_lk);
+    cson_value_free(vobj);
 }
 
 int eventlog_debug_enabled(void) {

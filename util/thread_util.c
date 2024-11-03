@@ -34,7 +34,7 @@
 #include "thdpool.h"
 #include "cheapstack.h"
 #include <inttypes.h>
-#include "locks_wrap.h"
+#include "sys_wrap.h"
 
 #define MAX_RESOURCE_TYPE 255
 #define MAXSTACKDEPTH 64
@@ -248,10 +248,6 @@ void thread_util_donework(void)
 #include <sys/syscall.h>
 
 arch_tid getarchtid(void) { return syscall(__NR_gettid); }
-
-#elif defined(_IBM_SOURCE)
-
-arch_tid getarchtid(void) { return thread_self(); }
 
 #elif defined(__APPLE__)
 

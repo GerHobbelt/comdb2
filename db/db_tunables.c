@@ -32,6 +32,7 @@
 #include "net.h"
 #include "sql_stmt_cache.h"
 #include "sc_rename_table.h"
+#include <disttxn.h>
 #include "views.h"
 
 /* Maximum allowable size of the value of tunable. */
@@ -65,6 +66,28 @@ extern int gbl_disable_sql_dlmalloc;
 extern int gbl_enable_berkdb_retry_deadlock_bias;
 extern int gbl_enable_cache_internal_nodes;
 extern int gbl_partial_indexes;
+extern int gbl_logmsg_epochms;
+
+extern int gbl_2pc;
+char *gbl_allowed_coordinators;
+extern int gbl_all_waitdie;
+extern int gbl_debug_disable_waitdie_deadlock_detection;
+extern int gbl_coordinator_sync_on_commit;
+extern int gbl_coordinator_wait_propagate;
+extern int gbl_coordinator_block_until_durable;
+extern int gbl_disttxn_random_retry_poll;
+extern int gbl_disttxn_handle_cache;
+extern int gbl_disttxn_handle_linger_time;
+extern int gbl_disttxn_async_messages;
+extern int gbl_debug_sleep_before_dispatch;
+extern int gbl_debug_exit_participant_after_prepare;
+extern int gbl_debug_exit_coordinator_before_commit;
+extern int gbl_debug_exit_coordinator_after_commit;
+extern int gbl_debug_coordinator_dispatch_failure;
+extern int gbl_debug_sleep_coordinator_before_commit;
+extern int gbl_debug_sleep_on_set_read_only;
+extern int gbl_debug_wait_on_verify_off;
+extern int gbl_debug_disttxn_trace;
 extern int gbl_sparse_lockerid_map;
 extern int gbl_spstrictassignments;
 extern int gbl_early;
@@ -136,6 +159,7 @@ extern int gbl_udp;
 extern int gbl_update_delete_limit;
 extern int gbl_updategenids;
 extern int gbl_use_modsnap_for_snapshot;
+extern snap_impl_enum gbl_snap_impl;
 extern int gbl_use_appsock_as_sqlthread;
 extern int gbl_use_node_pri;
 extern int gbl_watchdog_watch_threshold;
@@ -144,6 +168,7 @@ extern int g_osql_max_trans;
 extern int gbl_osql_max_throttle_sec;
 extern int gbl_osql_random_restart;
 extern int gbl_toblock_random_deadlock_trans;
+extern int gbl_toblock_random_verify_error;
 extern int diffstat_thresh;
 extern int reqltruncate;
 extern int analyze_max_comp_threads;
@@ -154,6 +179,9 @@ extern int gbl_all_prepare_commit;
 extern int gbl_all_prepare_abort;
 extern int gbl_all_prepare_leak;
 extern int gbl_flush_on_prepare;
+extern int gbl_debug_sleep_before_prepare;
+extern int gbl_wait_for_prepare_seqnum;
+extern int gbl_flush_replicant_on_prepare;
 extern int gbl_abort_on_unset_ha_flag;
 extern int gbl_abort_on_unfound_txn;
 extern int gbl_abort_on_ufid_mismatch;
@@ -210,6 +238,7 @@ extern int gbl_incoherent_slow_inactive_timeout;
 extern int gbl_force_incoherent;
 extern int gbl_ignore_coherency;
 extern int gbl_skip_catchup_logic;
+extern int gbl_debug_downgrade_cluster_at_open;
 extern int gbl_forbid_incoherent_writes;
 extern int gbl_durable_set_trace;
 extern int gbl_set_seqnum_trace;
@@ -394,6 +423,7 @@ extern int gbl_perform_full_clean_exit;
 extern int gbl_clean_exit_on_sigterm;
 extern int gbl_stack_string_refs;
 extern int gbl_abort_on_dangling_stringrefs;
+extern int gbl_debug_alter_sequences_sleep;
 extern int gbl_debug_omit_dta_write;
 extern int gbl_debug_omit_idx_write;
 extern int gbl_debug_omit_blob_write;
@@ -424,6 +454,7 @@ extern int gbl_pgcomp_dbg_stdout;
 extern int gbl_pgcomp_dbg_ctrace;
 extern int gbl_warn_on_equiv_type_mismatch;
 extern int gbl_warn_on_equiv_types;
+extern int gbl_fdb_socket_timeout_ms;
 extern int gbl_fdb_incoherence_percentage;
 extern int gbl_fdb_io_error_retries;
 extern int gbl_fdb_io_error_retries_phase_1;
@@ -460,6 +491,7 @@ extern int gbl_revsql_cdb2_debug;
 extern int gbl_revsql_host_refresh_freq_sec;
 extern int gbl_revsql_connect_freq_sec;
 extern int gbl_revsql_force_rte;
+extern int gbl_revsql_fake_connect_failure;
 extern int gbl_connect_remote_rte;
 
 int gbl_debug_tmptbl_corrupt_mem;
@@ -504,6 +536,9 @@ extern int gbl_altersc_latency_inc;
 extern int gbl_sc_history_max_rows;
 extern int gbl_sc_status_max_rows;
 extern int gbl_rep_process_pstack_time;
+
+extern void set_snapshot_impl(snap_impl_enum impl);
+extern const char *snap_impl_str(snap_impl_enum impl);
 
 /*
   =========================================================
@@ -563,6 +598,49 @@ int percent_verify(void *unused, void *percent)
         return 1;
     }
     return 0;
+}
+
+struct snapshot_impl_config_st {
+    const char *name;
+    int code;
+} snapshot_impl_config_vals[] = {{"original", SNAP_IMPL_ORIG},
+                                {"new", SNAP_IMPL_NEW},
+                                {"modsnap", SNAP_IMPL_MODSNAP}};
+
+static int snapshot_impl_update(void *context, void *value) {
+    comdb2_tunable *tunable;
+    char *tok;
+    int st = 0;
+    int ltok;
+    int len;
+    int rc;
+
+    tunable = (comdb2_tunable *)context;
+    len = strlen(value);
+    tok = segtok(value, len, &st, &ltok);
+    rc = 0;
+
+    for (int i = 0; i < (sizeof(snapshot_impl_config_vals) /
+                         sizeof(struct snapshot_impl_config_st));
+         i++) {
+        if (tokcmp(tok, ltok, snapshot_impl_config_vals[i].name) == 0) {
+            set_snapshot_impl(snapshot_impl_config_vals[i].code);
+            goto found;
+        }
+    }
+
+    logmsg(LOGMSG_ERROR, "Invalid value '%s' for tunable '%s'\n", tok, tunable->name);
+    rc = 1;
+
+found:
+    return rc;
+}
+
+static void *snapshot_impl_value(void *context)
+{
+    comdb2_tunable *tunable = (comdb2_tunable *)context;
+
+    return (void *) snap_impl_str(*(int *)tunable->var);
 }
 
 struct enable_sql_stmt_caching_st {
@@ -1092,6 +1170,14 @@ static void *portmux_bind_path_get(void *dum)
 static int portmux_bind_path_set(void *dum, void *path)
 {
     return set_portmux_bind_path(path);
+}
+
+static int disttxn_allow_coordinator_set(void *context, void *value)
+{
+    comdb2_tunable *tunable = (comdb2_tunable *)context;
+    int len = strlen(value);
+    *(char **)tunable->var = process_allow_coordinator(value, len);
+    return 0;
 }
 
 static int test_log_file_update(void *context, void *value)

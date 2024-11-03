@@ -44,7 +44,7 @@
 
 #include "thread_stats.h"
 #include "logmsg.h"
-#include "locks_wrap.h"
+#include "sys_wrap.h"
 
 extern void berkdb_dumptrans(DB_ENV *);
 extern int __db_panic(DB_ENV *dbenv, int err);
@@ -703,21 +703,7 @@ void bdb_dumpit(bdb_state_type *bdb_state) {}
 #if 0
 static unsigned long long get_hrtimestamp(void)
 {
-#if defined(_IBM_SOURCE)
-
-   timebasestruct_t hr_time;
-   unsigned long long absolute_time;
-   
-   read_real_time(&hr_time, sizeof (struct timebasestruct));
-   time_base_to_time(&hr_time, sizeof (struct timebasestruct));
-   
-   absolute_time =
-    ((unsigned long long)hr_time.tb_high) *  1000000000
-    + ((long long)hr_time.tb_low);
-   
-   return absolute_time;
-
-#elif defined(_SUN_SOURCE)
+#if defined(_SUN_SOURCE)
 
    return 0;
 

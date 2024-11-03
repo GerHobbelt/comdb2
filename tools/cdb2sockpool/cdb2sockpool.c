@@ -14,10 +14,6 @@
    limitations under the License.
  */
 
-#ifdef __hpux
-#define _XOPEN_SOURCE_EXTENDED
-#endif
-
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/resource.h>
@@ -50,7 +46,7 @@
 #include <bb_daemon.h>
 
 #include "cdb2sockpool.h"
-#include <locks_wrap.h>
+#include <sys_wrap.h>
 
 #define MAX_TYPESTR_LEN 2048
 

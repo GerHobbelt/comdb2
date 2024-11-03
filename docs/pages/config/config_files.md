@@ -640,6 +640,23 @@ can be queried with the `stat autonalyze` command.
 |UDP_DROP_WARN_PERCENT|10 (PERCENT) | Warn only if percentage of dropped packets exceeds this
 |UDP_DROP_WARN_TIME|300 (SECS) | No more than one warning per `UDP_DROP_WARN_TIME` seconds
 
+#### 2PC tunables
+
+|2PC option | Default | Description
+|-----------|---------|------------
+|ENABLE_2PC|1 (BOOLEAN) | Uses 2-phased commits for fdb-distributed transactions
+|ALLOW_COORDINATOR|n/a (DB/TIER) | Allow this db/tier to act as a coordinator
+|COORDINATOR_SYNC_ON_COMMIT|1 (BOOLEAN) | Coordinator syncs log and waits for replicants on distributed commit 
+|COORDINATOR_BLOCK_UNTIL_DURABLE|1 (BOOLEAN) | Coordinator blocks until commit is durable
+|COORDINATOR_WAIT_PROPAGATE|1 (BOOLEAN) | Coordinator blocks until participants complete distributed commit
+|FLUSH_ON_PREPARE|1 (BOOLEAN) | Master flushes log on prepare
+|FLUSH_REPLICANT_ON_PREPARE|1 (BOOLEAN) | Replicants flush log on prepare
+|WAIT_FOR_PREPARE_SEQNUM|1 (BOOLEAN) | Participants fail on prepare if replicated to less than quorum
+|DISTTXN_ASYNC_MESSAGE|1 (BOOLEAN) | Send 2-pc messages asynchronously
+|DISTTXN_RANDOM_RETRY_POLL|500 (MSECS) | Coordinator replicant random max poll time on distributed deadlock
+|DISTTXN_HANDLE_CACHE|1 (BOOLEAN) | Disttxn caches handles to peers
+|DISTTXN_HANDLE_LINGER_TIME|60 (SECS) | Time an unused disttxn-handle persists
+
 #### Rowlock tunables
 
 |Rowlocks option | Description
@@ -923,6 +940,7 @@ These options are toggle-able at runtime.
 |sc_del_unused_files_threshold |                             |
 |setattr | | Change bdb tunables - see [bdb tunables](#bdbattr-tunables)
 |setclass | | See [permissioning commands](#allowdisallow-commands)
+|set_snapshot_impl | "modsnap" | Set the implementation to be used for snapshot isolation. Can be one of "original", "new", or "modsnap".
 |setsqlattr | | See (SQL tunables)[#sql-tunables]
 |sockbplog_sockpool | off | Osql bplog sent over sockets is using local sockpool
 |sockbplog| off | Osql bplog is sent from replicants to master on their own socket

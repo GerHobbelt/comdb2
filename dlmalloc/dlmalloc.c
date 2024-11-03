@@ -1,7 +1,3 @@
-#ifdef __hpux
-#define HAVE_USR_INCLUDE_MALLOC_H
-#endif
-
 /*
   This is a version (aka dlmalloc) of malloc/free/realloc written by
   Doug Lea and released to the public domain, as explained at
@@ -2515,7 +2511,7 @@ static int init_mparams(void) {
       if ((fd = open("/dev/urandom", O_RDONLY)) >= 0 &&
           read(fd, buf, sizeof(buf)) == sizeof(buf)) {
         s = *((size_t *) buf);
-        close(fd);
+        Close(fd);
       }
       else
 #endif /* USE_DEV_RANDOM */

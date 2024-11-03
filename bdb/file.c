@@ -74,7 +74,7 @@
 #include <cheapstack.h>
 #include "bdb_int.h"
 #include "locks.h"
-#include "locks_wrap.h"
+#include "sys_wrap.h"
 #include <time.h>
 #include <ctrace.h>
 #include <list.h>
@@ -104,6 +104,7 @@
 #include <schema_lk.h>
 #include <tohex.h>
 #include <timer_util.h>
+#include <disttxn.h>
 
 #include <phys_rep.h>
 #include <phys_rep_lsn.h>
@@ -720,7 +721,7 @@ static void form_queuedb_name_int(bdb_state_type *bdb_state, char *name,
 {
     if (file_version != 0) {
         /* Flip to form name on big-endian */
-#if defined(_IBM_SOURCE) || defined(_SUN_SOURCE)
+#if defined(_SUN_SOURCE)
         file_version = flibc_llflip(file_version);
 #endif
         snprintf0(name, len, "XXX.%s_%016llx.queuedb", bdb_state->name,
@@ -1519,7 +1520,7 @@ int bdb_dump_cache_to_file(bdb_state_type *bdb_state, const char *file,
     if ((fd = open(file, O_WRONLY | O_TRUNC | O_CREAT, 0666)) < 0 ||
         (s = sbuf2open(fd, 0)) == NULL) {
         if (fd >= 0)
-            close(fd);
+            Close(fd);
         logmsg(LOGMSG_ERROR, "%s error opening %s: %d\n", __func__, file,
                errno);
         return -1;
@@ -1535,7 +1536,7 @@ int bdb_load_cache(bdb_state_type *bdb_state, const char *file)
     SBUF2 *s;
     if ((fd = open(file, O_RDONLY, 0)) < 0 || (s = sbuf2open(fd, 0)) == NULL) {
         if (fd >= 0)
-            close(fd);
+            Close(fd);
         return -1;
     }
     rc = bdb_state->dbenv->memp_load(bdb_state->dbenv, s);
@@ -2245,7 +2246,7 @@ void pstack_self(void)
     int rc = system(cmd);
     if (rc) {
         logmsg(LOGMSG_ERROR, "%s:%d system(\"%s\") failed (rc = %d)\n", __func__, __LINE__, cmd, rc);
-        close(fd);
+        Close(fd);
         unlink(output);
         unset_running_pstack();
         return;
@@ -2254,7 +2255,7 @@ void pstack_self(void)
     FILE *out = fdopen(fd, "r");
     if (!out) {
         logmsg(LOGMSG_ERROR, "%s: open(%s) err:%s\n", __func__, cmd, strerror(errno));
-        close(fd);
+        Close(fd);
         unlink(output);
         unset_running_pstack();
         return;
@@ -2413,6 +2414,7 @@ int bdb_is_standalone(void *dbenv, void *in_bdb_state)
 
 extern int gbl_commit_delay_trace;
 int gbl_skip_catchup_logic = 0;
+int gbl_debug_downgrade_cluster_at_open = 0;
 
 static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
 {
@@ -3034,6 +3036,10 @@ if (!is_real_netinfo(bdb_state->repinfo->netinfo))
         print(bdb_state, "dbenv_open: started rep as MASTER\n");
     } else /* we start as a client */
     {
+        if (gbl_debug_downgrade_cluster_at_open) {
+            logmsg(LOGMSG_USER, "%s testcase sleep for 1 on downgrade_cluster_at_open\n", __func__);
+            sleep(1);
+        }
         /*fprintf(stderr, "dbenv_open: starting rep as client\n");*/
         logmsg(LOGMSG_USER,
                "%s line %d calling rep_start as client with egen 0\n", __func__,
@@ -5165,6 +5171,8 @@ void bdb_setmaster(bdb_state_type *bdb_state, char *host)
     whoismaster_rtn(bdb_state, 0);
 }
 
+int gbl_debug_sleep_on_set_read_only = 0;
+
 void bdb_set_read_only(bdb_state_type *bdb_state)
 {
     bdb_state_type *child;
@@ -5180,6 +5188,10 @@ void bdb_set_read_only(bdb_state_type *bdb_state)
     if (bdb_state->parent)
         bdb_state = bdb_state->parent;
 
+    if (gbl_debug_sleep_on_set_read_only) {
+        logmsg(LOGMSG_USER, "%s sleeping on debug_sleep_set_read_only tunable\n", __func__);
+        sleep(7);
+    }
     bdb_state->read_write = 0;
 
     bdb_lock_children_lock(bdb_state);
@@ -5249,6 +5261,7 @@ static int bdb_upgrade_int(bdb_state_type *bdb_state, uint32_t newgen,
     int i;
 
     osql_repository_cancelall();
+    disttxn_cleanup();
 
     /* if we were passed a child, find his parent */
     if (bdb_state->parent)
@@ -5389,7 +5402,11 @@ static void *bdb_abort_prepared_thd(void *arg)
     /* Stop when we can acquire mutex */
     while (pthread_mutex_trylock(&b->lk) != 0) {
         if (bdb_lock_desired(bdb_state)) {
-            logmsg(LOGMSG_INFO, "%s aborting waiters on prepared txns\n", __func__);
+            static int lastpr = 0;
+            if ((comdb2_time_epoch() - lastpr) > 1) {
+                logmsg(LOGMSG_INFO, "%s aborting waiters on prepared txns\n", __func__);
+                lastpr = comdb2_time_epoch();
+            }
             bdb_state->dbenv->txn_abort_prepared_waiters(bdb_state->dbenv);
         }
         poll(0, 0, 100);
@@ -5780,6 +5797,7 @@ static bdb_state_type *bdb_open_int(int envonly, const char name[], const char d
         bdb_lock_init(bdb_state);
 
         Pthread_mutex_init(&bdb_state->durable_lsn_lk, NULL);
+        Pthread_cond_init(&bdb_state->durable_lsn_cd, NULL);
     }
 
     /* XXX this looks wrong */
@@ -7775,8 +7793,8 @@ static int oldfile_list_contains(const char *filename)
 
 #ifdef DEBUG
     if (ptr)
-        logmsg(LOGMSG_INFO, "tid: 0x%x found in oldfilelist file %s\n",
-                pthread_self(), filename);
+        logmsg(LOGMSG_INFO, "tid: %p found in oldfilelist file %s\n",
+                (void *) pthread_self(), filename);
 #endif
     return ptr != NULL;
 }
@@ -8935,7 +8953,7 @@ done:
         free(path);
     }
     if (fd != -1)
-        close(fd);
+        Close(fd);
     os_free(buf);
 
     return rc;

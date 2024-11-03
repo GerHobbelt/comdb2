@@ -33,7 +33,7 @@
 #include "mem_util.h"
 #include "list.h"
 #include "logmsg.h"
-#include "locks_wrap.h"
+#include "sys_wrap.h"
 
 #define RW (PROT_READ | PROT_WRITE)
 #define STACK_FREE_DELAY 5
@@ -281,13 +281,6 @@ int comdb2_pthread_create(pthread_t *thread, pthread_attr_t *attr,
         abort();
     }
 
-#elif defined(_IBM_SOURCE)
-    /*
-     * POSIX states that sockaddr should point to the lowest
-     * address regardless of stack growth direction.
-     * However, it isn't honoured by libpthreads on AIX.
-     */
-    arg->stack = (void *)(stack + stacksz);
 #endif
 
     arg->func = start_routine;

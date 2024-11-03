@@ -31,6 +31,9 @@
 
 #include <hostname_support.h>
 #include <sbuf2.h>
+#if SBUF2_SERVER
+#include <sys_wrap.h>
+#endif
 
 #if SBUF2_SERVER
 #  ifndef SBUF2_DFL_SIZE
@@ -120,7 +123,11 @@ int SBUF2_FUNC(sbuf2free)(SBUF2 *sb)
        fd re-usable. Close the fd if it fails. */
     int rc = sslio_close(sb, 1);
     if (rc)
+#if SBUF2_SERVER
+        Close(sb->fd);
+#else
         close(sb->fd);
+#endif
 
     sb->fd = -1;
     if (sb->rbuf) {
@@ -164,8 +171,13 @@ int SBUF2_FUNC(sbuf2close)(SBUF2 *sb)
        before closing the underlying fd. */
     sslio_close(sb, (sb->flags & SBUF2_NO_CLOSE_FD));
 
-    if (!(sb->flags & SBUF2_NO_CLOSE_FD))
+    if (!(sb->flags & SBUF2_NO_CLOSE_FD)) {
+#if SBUF2_SERVER
+        Close(sb->fd);
+#else
         close(sb->fd);
+#endif
+    }
 
     return sbuf2free(sb);
 }

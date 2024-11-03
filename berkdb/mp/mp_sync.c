@@ -19,9 +19,7 @@ static const char revid[] = "$Id: mp_sync.c,v 11.80 2003/09/13 19:20:41 bostic E
 #include "dbinc/txn.h"
 
 #include <sys/types.h>
-#ifndef _AIX
 #include <sys/stat.h>
-#endif
 #include <pthread.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -36,7 +34,7 @@ static const char revid[] = "$Id: mp_sync.c,v 11.80 2003/09/13 19:20:41 bostic E
 #include "ctrace.h"
 #include <pool.h>
 #include "logmsg.h"
-#include "locks_wrap.h"
+#include "sys_wrap.h"
 
 extern int gbl_file_permissions;
 
@@ -222,13 +220,6 @@ __checkpoint_save(DB_ENV *dbenv, DB_LSN *lsn, int in_recovery)
 		__db_err(dbenv, "can't write checkpoint record rc %d %s\n", rc,
 		    strerror(rc));
 		return EINVAL;
-	}
-
-	if (dbenv->txmap != NULL) {
-		Pthread_mutex_lock(&dbenv->txmap->txmap_mutexp);
-		// Since checkpoint lsn is lt begin lsn of oldest in-flight txn, any lsn that we get to before the checkpoint lsn was made by a committed txn.
-		dbenv->txmap->highest_checkpoint_lsn = *lsn; 
-		Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
 	}
 
 	return 0;
@@ -2387,7 +2378,7 @@ __memp_load_default(dbenv)
 				__LINE__, rpath, errno);
 #endif
 		if (fd >= 0)
-			close(fd);
+			Close(fd);
 		ret = -1;
 		goto done;
 	}
@@ -2463,7 +2454,7 @@ __memp_dump_default(dbenv, force)
 				__LINE__, rtmppath, errno);
 #endif
 		if (fd >= 0)
-			close(fd);
+			Close(fd);
 		ret = -1;
 		goto done;
 	}

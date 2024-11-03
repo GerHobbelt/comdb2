@@ -71,6 +71,7 @@ void berk_memp_sync_alarm_ms(int);
 
 #include <net.h>
 #include <bdb_api.h>
+#include <disttxn.h>
 #include <sbuf2.h>
 #include "quantize.h"
 #include "timers.h"
@@ -459,6 +460,8 @@ int gbl_enable_berkdb_retry_deadlock_bias = 0;
 int gbl_enable_cache_internal_nodes = 1;
 int gbl_use_modsnap_for_snapshot = 0;
 int gbl_modsnap_asof = 0;
+const snap_impl_enum gbl_snap_fallback_impl = SNAP_IMPL_MODSNAP;
+snap_impl_enum gbl_snap_impl = SNAP_IMPL_MODSNAP;
 int gbl_use_appsock_as_sqlthread = 0;
 int gbl_rep_process_txn_time = 0;
 int gbl_utxnid_log = 1;
@@ -627,6 +630,7 @@ int gbl_use_block_mode_status_code = 1;
 unsigned int gbl_delayed_skip = 0;
 int gbl_enable_osql_logging = 0;
 int gbl_enable_osql_longreq_logging = 0;
+long long gbl_distributed_deadlock_count = 0;
 
 int gbl_broken_num_parser = 0;
 
@@ -967,7 +971,7 @@ int get_max_reclen(struct dbenv *dbenv)
     sbfile = sbuf2open(file, 0);
     if (!sbfile) {
         logmsg(LOGMSG_ERROR, "get_max_reclen: failed to open sbuf2\n");
-        close(file);
+        Close(file);
         return -1;
     }
 
@@ -1453,6 +1457,15 @@ char *comdb2_get_tmp_dir(void)
         debug_switch_set_tmp_dir_sleep(0);
     }
     return path;
+}
+
+char *comdb2_get_tmp_dir_name(void) {
+    char *full_path = comdb2_get_tmp_dir();
+
+    char *last_slash_pos = strrchr(full_path, '/');
+    assert(last_slash_pos != NULL);
+
+    return ++last_slash_pos;
 }
 
 /* check space similar to bdb/summarize.c: check_free_space()
@@ -2466,7 +2479,7 @@ int llmeta_dump_mapping_tran(void *tran, struct dbenv *dbenv)
     sbfile = sbuf2open(file, 0);
     if (!sbfile) {
         logmsg(LOGMSG_ERROR, "llmeta_dump_mapping: failed to open sbuf2\n");
-        close(file);
+        Close(file);
         return -1;
     }
 
@@ -3744,6 +3757,8 @@ static int init(int argc, char **argv)
 
     run_init_plugins(COMDB2_PLUGIN_INITIALIZER_PRE);
 
+    disttxn_init();
+
     /* open database environment, and all dbs */
     thedb = newdbenv(dbname, lrlname);
     if (thedb == 0)
@@ -3989,6 +4004,8 @@ static int init(int argc, char **argv)
 
     if (gbl_berkdb_iomap) 
         bdb_berkdb_iomap_set(thedb->bdb_env, 1);
+
+    disttxn_init_recover_prepared();
 
     if (!gbl_exit && gbl_new_snapisol && gbl_snapisol) {
         bdb_attr_set(thedb->bdb_attr, BDB_ATTR_PAGE_ORDER_TABLESCAN, 0);
@@ -4433,7 +4450,7 @@ void create_old_blkseq_thread(struct dbenv *dbenv)
 /* bump up ulimit for no. fds up to hard limit */
 static void adjust_ulimits(void)
 {
-#   if !defined(__hpux) && !defined(__APPLE__)
+#   if !defined(__APPLE__)
     struct rlimit64 rlim;
 
     if (-1 == getrlimit64(RLIMIT_DATA, &rlim)) {
@@ -4477,7 +4494,7 @@ static void adjust_ulimits(void)
     } else {
         logmsg(LOGMSG_INFO, "ulimit for no. fds already set\n");
     }
-#   endif //__hpux
+#   endif //__APPLE__
 }
 
 extern void set_throttle(int);
@@ -5483,13 +5500,15 @@ void create_marker_file()
                 comdb2_location("marker", "%s.trap", thedb->dbs[ii]->tablename);
             tmpfd = creat(marker_file, 0666);
             free(marker_file);
-            if (tmpfd != -1) close(tmpfd);
+            if (tmpfd != -1)
+                Close(tmpfd);
         }
     }
     marker_file = comdb2_location("marker", "%s.trap", thedb->envname);
     tmpfd = creat(marker_file, 0666);
     free(marker_file);
-    if (tmpfd != -1) close(tmpfd);
+    if (tmpfd != -1)
+        Close(tmpfd);
 }
 
 static void handle_resume_sc()
@@ -6012,7 +6031,7 @@ void epoch2a(int epoch, char *buf, size_t buflen)
     struct tm tmres;
     int pos;
     localtime_r((const time_t *)&epoch, &tmres);
-#if defined(_SUN_SOURCE) || defined(_IBM_SOURCE)
+#if defined(_SUN_SOURCE)
     asctime_r(&tmres, buf);
 #else
     strncpy0(buf, "epoch2a:ARCH?", buflen);

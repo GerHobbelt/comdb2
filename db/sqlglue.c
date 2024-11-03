@@ -2424,6 +2424,35 @@ void clear_session_tbls(struct sqlclntstate *clnt)
     }
 }
 
+int add_participant(struct sqlclntstate *clnt, const char *dbname, const char *tier)
+{
+    struct participant *p;
+    LISTC_FOR_EACH(&clnt->participants, p, linkv)
+    {
+        if (!strcmp(p->participant_name, dbname) && !strcmp(p->participant_tier, tier)) {
+            logmsg(LOGMSG_ERROR, "%s %s:%s added more than once to participants\n", __func__, dbname, tier);
+            return -1;
+        }
+    }
+    p = calloc(sizeof(struct participant), 1);
+    p->participant_name = strdup(dbname);
+    p->participant_tier = strdup(tier);
+    listc_atl(&clnt->participants, p);
+    return 0;
+}
+
+void clear_participants(struct sqlclntstate *clnt)
+{
+    struct participant *p = listc_rtl(&clnt->participants), *freep;
+    while (p) {
+        free(p->participant_name);
+        free(p->participant_tier);
+        freep = p;
+        p = listc_rtl(&clnt->participants);
+        free(freep);
+    }
+}
+
 static int move_is_nop(BtCursor *pCur, int *pRes)
 {
     if (*pRes != 1 || pCur->cursor_class != CURSORCLASS_INDEX) {
@@ -2627,7 +2656,7 @@ static int cursor_move_table(BtCursor *pCur, int *pRes, int how)
     int outrc = SQLITE_OK;
     uint8_t ver;
 
-    if (access_control_check_sql_read(pCur, thd)) {
+    if (access_control_check_sql_read(pCur, thd, NULL)) {
         return SQLITE_ACCESS;
     }
 
@@ -2756,7 +2785,7 @@ static int cursor_move_index(BtCursor *pCur, int *pRes, int how)
     int outrc = SQLITE_OK;
     struct sqlclntstate *clnt = thd->clnt;
 
-    if (access_control_check_sql_read(pCur, thd)) {
+    if (access_control_check_sql_read(pCur, thd, NULL)) {
         return SQLITE_ACCESS;
     }
 
@@ -4791,6 +4820,7 @@ int start_new_transaction(struct sqlclntstate *clnt, struct sql_thread *thd)
 
     clnt->intrans = 1;
     clear_session_tbls(clnt);
+    clear_participants(clnt);
 
 #ifdef DEBUG_TRAN
     if (gbl_debug_sql_opcodes) {
@@ -4937,6 +4967,10 @@ int sqlite3BtreeBeginTrans(Vdbe *vdbe, Btree *pBt, int wrflag, int *pSchemaVersi
     }
 
     rc = start_new_transaction(clnt, thd);
+
+    /* 2pc on tunable, only here for now */
+    extern int gbl_2pc;
+    clnt->use_2pc = gbl_2pc;
 
 done:
     if (rc == SQLITE_OK && pSchemaVersion) {
@@ -5277,6 +5311,7 @@ int sqlite3BtreeRollback(Btree *pBt, int dummy, int writeOnlyDummy)
 
     clnt->intrans = 0;
     clear_session_tbls(clnt);
+    clear_participants(clnt);
 
     /* UPSERT: Restore the isolation level back to what it was. */
     // No modsnap here -- we went from sosql to recom, not modsnap.
@@ -5717,7 +5752,7 @@ int sqlite3BtreeMovetoUnpacked(BtCursor *pCur, /* The cursor to be moved */
      * cursor we may have */
     bdb_cursor_ser_invalidate(&pCur->cur_ser);
 
-    if (access_control_check_sql_read(pCur, thd)) {
+    if (access_control_check_sql_read(pCur, thd, NULL)) {
         rc = SQLITE_ACCESS;
         goto done;
     }
@@ -7700,6 +7735,13 @@ static int sqlite3LockStmtTables_int(sqlite3_stmt *pStmt, int after_recovery)
 
     if (NULL == clnt->dbtran.cursor_tran) {
         return 0;
+    }
+
+    /* do we need views lock? get it here before getting "comdb2_table" lock */
+    if (p->numPartitionLocks) {
+        p->crtPartitionLocks = p->numPartitionLocks;
+        extern void views_lock(void);
+        views_lock();
     }
 
     for (int i = 0; i < p->numVTableLocks; i++) {
@@ -10822,7 +10864,7 @@ int sqlite3BtreeCount(BtCursor *pCur, i64 *pnEntry)
                               ? gbl_move_deadlk_max_attempt
                               : 500;
         do {
-            if (access_control_check_sql_read(pCur, thd)) {
+            if (access_control_check_sql_read(pCur, thd, NULL)) {
                 rc = SQLITE_ACCESS;
                 break;
             }
@@ -11294,6 +11336,8 @@ int gbl_connect_remote_rte = 0;
 /* use portmux to open an SBUF2 to local db or proxied db
    it is trying to use sockpool
  */
+int gbl_fdb_socket_timeout_ms;
+
 SBUF2 *connect_remote_db(const char *protocol, const char *dbname, const char *service, char *host, int use_cache,
                          int force_rte)
 {
@@ -11354,11 +11398,11 @@ sbuf:
     sb = sbuf2open(sockfd, 0);
     if (!sb) {
         logmsg(LOGMSG_ERROR, "%s: failed to open sbuf\n", __func__);
-        close(sockfd);
+        Close(sockfd);
         return NULL;
     }
 
-    sbuf2settimeout(sb, IOTIMEOUTMS, IOTIMEOUTMS);
+    sbuf2settimeout(sb, gbl_fdb_socket_timeout_ms, gbl_fdb_socket_timeout_ms);
 
     /* Tell portmux to pass connection to database */
     if (use_rte) {
@@ -13090,8 +13134,9 @@ int clnt_check_bdb_lock_desired(struct sqlclntstate *clnt)
     struct sql_thread *thd = pthread_getspecific(query_info_key);
     int rc;
 
-    if (!thd || !bdb_lock_desired(thedb->bdb_env))
+    if (!thd || !bdb_lock_desired(thedb->bdb_env) || !clnt->dbtran.cursor_tran) {
         return 0;
+    }
 
     logmsg(LOGMSG_WARN, "bdb_lock_desired so calling recover_deadlock\n");
 

@@ -43,7 +43,7 @@ typedef unsigned int u_int;
 #include <gettimeofday_ms.h>
 #include <errno.h>
 #include <logmsg.h>
-#include <locks_wrap.h>
+#include <sys_wrap.h>
 
 extern void berkdb_dump_lockers_summary(DB_ENV *);
 
@@ -610,6 +610,7 @@ static ssize_t tester(const char *name, size_t num, tester_routine *routine)
 }
 
 #define arraylen(x) (sizeof((x)) / sizeof((x)[0]))
+extern int gbl_all_waitdie;
 
 static void berkdb_tester(void)
 {
@@ -623,7 +624,7 @@ static void berkdb_tester(void)
     }
     for (i = 0; i < len; ++i) {
         rc = tester("ring", num[i], ring_tester);
-        assert(rc == 1); // just one should ddlk
+        assert(rc == 1 || gbl_all_waitdie); // just one should ddlk
     }
     return;
 }
