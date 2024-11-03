@@ -143,6 +143,7 @@ void berk_memp_sync_alarm_ms(int);
 #include "sc_csc2.h"
 #include "reverse_conn.h"
 #include "alias.h"
+#include "str_util.h" /* QUOTE */
 #define tokdup strndup
 
 int gbl_thedb_stopped = 0;
@@ -203,8 +204,6 @@ int clear_temp_tables(void);
 pthread_key_t comdb2_open_key;
 
 /*---GLOBAL SETTINGS---*/
-#define QUOTE_(x) #x
-#define QUOTE(x) QUOTE_(x)
 const char *const gbl_db_git_version_sha = QUOTE(GIT_VERSION_SHA=COMDB2_GIT_VERSION_SHA);
 const char gbl_db_version[] = QUOTE(COMDB2_BUILD_VERSION);
 const char gbl_db_semver[] = QUOTE(COMDB2_SEMVER);
@@ -228,7 +227,7 @@ int gbl_uses_externalauth = 0;
 int gbl_uses_externalauth_connect = 0;
 int gbl_externalauth_warn = 0;
 int gbl_identity_cache_max = 500;
-int gbl_iam_verbosity = 0;
+int gbl_iam_verbosity = 1;
 int gbl_upd_key;
 unsigned long long gbl_sqltick;
 int gbl_watchdog_watch_threshold = 60;
