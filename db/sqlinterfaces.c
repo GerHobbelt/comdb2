@@ -1417,16 +1417,6 @@ void sql_set_sqlengine_state(struct sqlclntstate *clnt, char *file, int line,
     clnt->ctrl_sqlengine = newstate;
 }
 
-/* skip spaces and tabs, requires at least one space */
-static inline char *skipws(char *str)
-{
-    if (str) {
-        while (*str && isspace(*str))
-            str++;
-    }
-    return str;
-}
-
 static int retrieve_snapshot_info(char *sql, char *tzname)
 {
     char *str = sql;
@@ -1524,12 +1514,6 @@ static int retrieve_snapshot_info(char *sql, char *tzname)
                            "after \"begin\"\n");
                     return -1;
                 }
-                /*
-                   else if (!strncasecmp(str, "genid"))
-                   {
-
-                   }
-                 */
             } else {
                 logmsg(LOGMSG_ERROR, "Missing snapshot info after \"as of\"\n");
                 return -1;
@@ -1739,10 +1723,10 @@ int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
     assert(db->handle);
     if (clnt->dbtran.mode == TRANLEVEL_MODSNAP) {
         if (clnt->is_hasql_retry) {
-            get_snapshot(clnt, (int *) &clnt->last_commit_lsn_file, (int *) &clnt->last_commit_lsn_offset);
+            get_snapshot(clnt, (int *) &clnt->modsnap_start_lsn_file, (int *) &clnt->modsnap_start_lsn_offset);
         }
         if (bdb_get_modsnap_start_state(db->handle, clnt->is_hasql_retry, clnt->snapshot,
-                    &clnt->last_commit_lsn_file, &clnt->last_commit_lsn_offset, 
+                    &clnt->modsnap_start_lsn_file, &clnt->modsnap_start_lsn_offset, 
                     &clnt->last_checkpoint_lsn_file, &clnt->last_checkpoint_lsn_offset)) {
             logmsg(LOGMSG_ERROR, "%s: Failed to get modsnap txn start state\n", __func__);
             rc = SQLITE_INTERNAL;
@@ -2901,7 +2885,9 @@ static void _prepare_error(struct sqlthdstate *thd,
 
     if(rc == ERR_SQL_PREPARE && !rec->stmt)
         errstr = "no statement";
-    else if (clnt->fdb_state.xerr.errval) {
+    if(rc == SQLITE_SCHEMA && rec->stmt && clnt->remsql_set.is_remsql) {
+        errstr = clnt->remsql_set.xerr.errstr;
+    } else if (clnt->fdb_state.xerr.errval) {
         errstr = clnt->fdb_state.xerr.errstr;
     } else {
         errstr = (char *)sqlite3_errmsg(thd->sqldb);
@@ -5467,6 +5453,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     clnt->force_fdb_push_redirect = 0;
     clnt->force_fdb_push_remote = 0;
     clnt->typessql = 0;
+    clnt->return_long_column_names = 0;
     free(clnt->prev_cost_string);
     clnt->prev_cost_string = NULL;
 
@@ -6692,6 +6679,7 @@ static void gather_connection_int(struct connection_info *c, struct sqlclntstate
         c->fingerprint = NULL;
     }
     c->in_transaction = clnt->in_client_trans;
+    c->in_local_cache = clnt->in_local_cache;
     Pthread_mutex_unlock(&clnt->state_lk);
 }
 
@@ -7027,6 +7015,74 @@ int run_internal_sql_clnt(struct sqlclntstate *clnt, char *sql)
             logmsg(LOGMSG_ERROR, "%s: Error: '%s' \n", __func__, clnt->saved_errstr);
         rc = 1;
     }
+    return rc;
+}
+
+static inline void init_internal_sql_clnt(struct sqlclntstate *clnt, struct schema_mem *sm) 
+{
+    start_internal_sql_clnt(clnt);
+    
+    if (sm) {
+        clnt->verify_indexes = 1;
+        clnt->schema_mems = (void *)sm;
+    }
+}
+
+static inline void init_mem_info(struct mem_info *info, struct sqlclntstate *clnt, struct schema *sc,
+                                 blob_buffer_t *outblob, const char *tzname,
+                                 struct convert_failure *fail_reason) 
+{
+    if (!tzname || !tzname[0]) tzname = "America/New_York";
+    
+    info->s = sc;
+    info->m = ((struct schema_mem *)clnt->schema_mems)->mout;
+    info->tzname = tzname;
+    info->outblob = outblob;
+    info->maxblobs = MAXBLOBS;
+    info->fail_reason = fail_reason;
+    info->fldidx = -1;
+}
+
+int run_internal_sql_function(void *outbuf, struct field *dest, const char *sqlfn,
+                              struct schema *sc, blob_buffer_t *outblob, const char *tzname,
+                              struct convert_failure *fail_reason)
+{   
+    if (strlen(sqlfn) < 1) return -1;
+
+    int rc = 0;
+    struct sqlclntstate clnt = {0};
+    struct schema_mem sm = {0};
+    Mem mout = {0};
+    sm.mout = &mout;
+    
+    init_internal_sql_clnt(&clnt, &sm);
+    char *stmt = sqlite3_mprintf("select %s", sqlfn);
+    
+    if (run_internal_sql_clnt(&clnt, stmt)) {
+        rc = -1;
+        goto done;
+    }
+
+    struct mem_info info = {0};
+    struct field_conv_opts_tz convopts = {.flags = 0};
+    
+    init_mem_info(&info, &clnt, sc, outblob, tzname, fail_reason); 
+    info.convopts = &convopts;
+    
+    if (mem_to_ondisk(outbuf, dest, &info, NULL)) {
+        rc = -1;
+        goto done;
+    }
+
+done:
+    if (clnt.schema_mems) {
+        Mem *mout = ((struct schema_mem *)clnt.schema_mems)->mout;
+        if (mout && mout->zMalloc) free(mout->zMalloc);
+    }
+    
+    end_internal_sql_clnt(&clnt);
+    sqlite3_free(stmt);
+    
     return rc;
 }
 

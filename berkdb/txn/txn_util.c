@@ -260,7 +260,7 @@ __txn_doevents(dbenv, txn, opcode, preprocess)
 
 	/*
 	 * This phase only gets called if we have a phase where we
-	 * release read locks.  Since not all paths will call this
+	 * release read locks.	Since not all paths will call this
 	 * phase, we have to check for it below as well.  So, when
 	 * we do the trade, we update the opcode of the entry so that
 	 * we don't try the trade again.
@@ -342,10 +342,10 @@ dofree:
 
 /*
  * __txn_commit_map_init --
- * 	Initialize commit LSN map.
+ *	Initialize commit LSN map.
  *
  * PUBLIC: int __txn_commit_map_init
- * PUBLIC:     __P((DB_ENV *));
+ * PUBLIC:	   __P((DB_ENV *));
  */
 int __txn_commit_map_init(dbenv) 
 	DB_ENV *dbenv;
@@ -368,8 +368,9 @@ int __txn_commit_map_init(dbenv)
 	}
 
 	ZERO_LSN(txmap->highest_checkpoint_lsn);
-	ZERO_LSN(txmap->highest_commit_lsn);
+	ZERO_LSN(txmap->modsnap_start_lsn);
 	txmap->smallest_logfile = -1;
+	txmap->highest_logfile = -1;
 	Pthread_mutex_init(&txmap->txmap_mutexp, NULL);
 	dbenv->txmap = txmap;
 
@@ -380,101 +381,194 @@ err:
 }
 
 static int free_logfile_list_elt(obj, arg)
-        void *obj;
-        void *arg;
+		void *obj;
+		void *arg;
 {
-        LOGFILE_TXN_LIST *llist;
-        UTXNID *elt, *tmp_elt;
-        DB_ENV *dbenv;
+	LOGFILE_TXN_LIST * const to_delete = (LOGFILE_TXN_LIST * const) obj;
+	DB_ENV * const dbenv = (DB_ENV * const) arg;
 
-        llist = (LOGFILE_TXN_LIST *) obj;
-        dbenv = (DB_ENV *) arg;
-
-        LISTC_FOR_EACH_SAFE(&llist->commit_utxnids, elt, tmp_elt, lnk)
-        {
-                __os_free(dbenv, elt);
-        }
-	__os_free(dbenv, llist);
-        return 0;
+	hash_clear(to_delete->commit_utxnids);
+	hash_free(to_delete->commit_utxnids);
+	__os_free(dbenv, to_delete);
+	return 0;
 }
 
 static int free_transactions(obj, arg)
-        void *obj;
-        void *arg;
+		void *obj;
+		void *arg;
 {
-        UTXNID_TRACK *elt;
-        DB_ENV *dbenv;
+		UTXNID_TRACK *elt;
+		DB_ENV *dbenv;
 
-        elt = (UTXNID_TRACK *) obj;
-        dbenv = (DB_ENV *) arg;
+		elt = (UTXNID_TRACK *) obj;
+		dbenv = (DB_ENV *) arg;
 
-        __os_free(dbenv, elt);
-        return 0;
+		__os_free(dbenv, elt);
+		return 0;
 }
 
 /*
  * __commit_map_destroy --
- *      Destroy commit LSN map.
+ *		Destroy commit LSN map.
  *
  * PUBLIC: int __commit_map_destroy
- * PUBLIC:     __P((DB_ENV *));
+ * PUBLIC:	   __P((DB_ENV *));
  */
 int __txn_commit_map_destroy(dbenv)
-        DB_ENV *dbenv;
+		DB_ENV *dbenv;
 {
-        if (dbenv->txmap) {
-                hash_for(dbenv->txmap->transactions, &free_transactions, (void *) dbenv);
-                hash_clear(dbenv->txmap->transactions);
-                hash_free(dbenv->txmap->transactions);
+		if (dbenv->txmap) {
+				hash_for(dbenv->txmap->transactions, &free_transactions, (void *) dbenv);
+				hash_clear(dbenv->txmap->transactions);
+				hash_free(dbenv->txmap->transactions);
 
-                hash_for(dbenv->txmap->logfile_lists, &free_logfile_list_elt, (void *) dbenv);
-                hash_clear(dbenv->txmap->logfile_lists);
-                hash_free(dbenv->txmap->logfile_lists);
+				hash_for(dbenv->txmap->logfile_lists, &free_logfile_list_elt, (void *) dbenv);
+				hash_clear(dbenv->txmap->logfile_lists);
+				hash_free(dbenv->txmap->logfile_lists);
 
-                Pthread_mutex_destroy(&dbenv->txmap->txmap_mutexp);
-                __os_free(dbenv, dbenv->txmap);
-        }
+				Pthread_mutex_destroy(&dbenv->txmap->txmap_mutexp);
+				__os_free(dbenv, dbenv->txmap);
+		}
 
-        return 0;
+		return 0;
 }
+
+
+/*
+ * __txn_commit_map_delete_logfile_list --
+ *
+ * PUBLIC: static int __txn_commit_map_delete_logfile_list
+ * PUBLIC:	   __P((DB_ENV *, LOGFILE_TXN_LIST * const));
+ */
+static void __txn_commit_map_delete_logfile_list(DB_ENV *dbenv, LOGFILE_TXN_LIST * const to_delete) {
+	DB_TXN_COMMIT_MAP * const txmap = dbenv->txmap;
+	const u_int32_t del_log = to_delete->file_num;
+	const int i_am_highest_logfile = del_log == txmap->highest_logfile;
+	const int i_am_smallest_logfile = del_log == txmap->smallest_logfile;
+
+	if (i_am_highest_logfile && i_am_smallest_logfile)
+	{
+		logmsg(LOGMSG_WARN, "%s: Deleting the only logfile (%"PRIu32") in txmap\n", __func__, del_log);
+
+		txmap->highest_logfile = -1;
+		txmap->smallest_logfile = -1;
+	} else if (i_am_highest_logfile)
+	{
+		logmsg(LOGMSG_WARN, "%s: Deleting the highest logfile (%"PRIu32") in txmap\n", __func__, del_log);
+
+		LOGFILE_TXN_LIST *successor = NULL;
+		while ((successor == NULL) && (--txmap->highest_logfile >= 0)) {
+			successor = hash_find(txmap->logfile_lists, &txmap->smallest_logfile);
+		}
+		assert(successor);
+	} else if (i_am_smallest_logfile)
+	{
+		LOGFILE_TXN_LIST *successor = NULL;
+		while ((successor == NULL) && (++txmap->smallest_logfile <= txmap->modsnap_start_lsn.file)) {
+			successor = hash_find(txmap->logfile_lists, &txmap->smallest_logfile);
+		}
+		assert(successor);
+	}
+
+	hash_del(txmap->logfile_lists, to_delete);
+	hash_clear(to_delete->commit_utxnids);
+	hash_free(to_delete->commit_utxnids);
+	__os_free(dbenv, to_delete);
+}
+
 
 /*
  * __txn_commit_map_remove_nolock --
- *  Remove a transaction from the commit LSN map without locking.
+ *	Remove a transaction from the commit LSN map without locking.
  *
  * PUBLIC: static int __txn_commit_map_remove_nolock
- * PUBLIC:     __P((DB_ENV *, u_int64_t));
+ * PUBLIC:	   __P((DB_ENV *, u_int64_t, int));
  */
-static int __txn_commit_map_remove_nolock(dbenv, utxnid)
+static int __txn_commit_map_remove_nolock(dbenv, utxnid, delete_from_logfile_lists)
+	DB_ENV *dbenv;
+	u_int64_t utxnid;
+	int delete_from_logfile_lists;
+{
+	if (dbenv->attr.commit_map_debug) {
+		logmsg(LOGMSG_DEBUG, "%s: Deleting utxnid %"PRIu64"\n",
+				__func__, utxnid);
+	}
+
+	if (utxnid == 0) {
+		if (dbenv->attr.commit_map_debug) {
+			logmsg(LOGMSG_DEBUG, "%s: Not deleting txn with utxnid 0\n", __func__);
+		}
+		return 0;
+	}
+
+	int ret = 0;
+	DB_TXN_COMMIT_MAP * const txmap = dbenv->txmap;
+
+	UTXNID_TRACK * const txn = hash_find(txmap->transactions, &utxnid);
+	if (!txn) {
+		logmsg(LOGMSG_ERROR, "%s: Could not find transaction %"PRIu64" in the map\n", __func__, utxnid);
+		ret = 1;
+		goto err;
+	}
+
+	LOGFILE_TXN_LIST * const logfile_list = hash_find(txmap->logfile_lists, &(txn->commit_lsn.file));
+	if (!logfile_list) {
+		logmsg(LOGMSG_ERROR, "%s: Could not find logfile list for file %d\n", __func__, txn->commit_lsn.file);
+		ret = 1;
+		goto err;
+	}
+
+	if (delete_from_logfile_lists) {
+		hash_del(logfile_list->commit_utxnids, txn);
+	}
+
+	if (hash_get_num_entries(logfile_list->commit_utxnids) == 0) {
+		__txn_commit_map_delete_logfile_list(dbenv, logfile_list);
+	}
+
+	hash_del(txmap->transactions, txn);
+	__os_free(dbenv, txn); 
+
+err:
+	return ret;
+}
+
+static int __txn_commit_map_remove_nolock_foreach_wrapper(void *obj, void *arg) {
+	return __txn_commit_map_remove_nolock((DB_ENV *) arg, ((UTXNID_TRACK *) obj)->utxnid, 0);
+}
+
+/*
+ * __txn_commit_map_remove --
+ *	Removes a transaction from the commit LSN map
+ *
+ *	*If this function deletes the transaction with the highest commit LSN, 
+ * then it is the caller's responsibility to call 
+ * `__txn_commit_map_set_modsnap_start_lsn` with the next highest
+ * commit LSN*
+ *
+ * PUBLIC: int __txn_commit_map_get_highest_checkpoint_lsn
+ * PUBLIC:	   __P((DB_ENV *, u_int64_t));
+ */
+int __txn_commit_map_remove(dbenv, utxnid)
 	DB_ENV *dbenv;
 	u_int64_t utxnid;
 {
-	DB_TXN_COMMIT_MAP *txmap;
-	UTXNID_TRACK *txn;
-	int ret;
+	DB_TXN_COMMIT_MAP * const txmap = dbenv->txmap;
 
-	txmap = dbenv->txmap;
-	ret = 0;
-
-	txn = hash_find(txmap->transactions, &utxnid);
-
-	if (txn) {
-		hash_del(txmap->transactions, txn);
-		__os_free(dbenv, txn); 
-	} else {
-		ret = 1;
-	}
+	Pthread_mutex_lock(&txmap->txmap_mutexp);
+	int ret = __txn_commit_map_remove_nolock(dbenv, utxnid, 1);
+	Pthread_mutex_unlock(&txmap->txmap_mutexp);
 
 	return ret;
 }
 
 /*
  * __txn_commit_map_get_highest_checkpoint_lsn --
- *  Get the highest checkpoint lsn
- *  from the commit LSN map. If `lock` neq 0 then will acquire lock over data access.
+ *	Get the highest checkpoint lsn
+ *	from the commit LSN map. If `lock` neq 0 then will acquire lock over data access.
  *
  * PUBLIC: int __txn_commit_map_get_highest_checkpoint_lsn
- * PUBLIC:     __P((DB_ENV *, DB_LSN *, int));
+ * PUBLIC:	   __P((DB_ENV *, DB_LSN *, int));
  */
 int __txn_commit_map_get_highest_checkpoint_lsn(dbenv, highest_checkpoint_lsn, lock)
 	DB_ENV *dbenv;
@@ -494,16 +588,16 @@ int __txn_commit_map_get_highest_checkpoint_lsn(dbenv, highest_checkpoint_lsn, l
 }
 
 /*
- * __txn_commit_map_get_highest_commit_lsn --
- *  Get the highest commit lsn
- *  from the commit LSN map. If `lock` neq 0 then will acquire lock over data access.
+ * __txn_commit_map_get_modsnap_start_lsn --
+ *	Get the highest commit lsn
+ *	from the commit LSN map. If `lock` neq 0 then will acquire lock over data access.
  *
- * PUBLIC: int __txn_commit_map_get_highest_commit_lsn
- * PUBLIC:     __P((DB_ENV *, DB_LSN *, int));
+ * PUBLIC: int __txn_commit_map_get_modsnap_start_lsn
+ * PUBLIC:	   __P((DB_ENV *, DB_LSN *, int));
  */
-int __txn_commit_map_get_highest_commit_lsn(dbenv, highest_commit_lsn, lock)
+int __txn_commit_map_get_modsnap_start_lsn(dbenv, modsnap_start_lsn, lock)
 	DB_ENV *dbenv;
-	DB_LSN *highest_commit_lsn;
+	DB_LSN *modsnap_start_lsn;
 	int lock;
 {
 	DB_TXN_COMMIT_MAP *txmap;
@@ -512,7 +606,7 @@ int __txn_commit_map_get_highest_commit_lsn(dbenv, highest_commit_lsn, lock)
 
 	if (lock) { Pthread_mutex_lock(&txmap->txmap_mutexp); }
 
-	*highest_commit_lsn = txmap->highest_commit_lsn;
+	*modsnap_start_lsn = txmap->modsnap_start_lsn;
 
 	if (lock) { Pthread_mutex_unlock(&txmap->txmap_mutexp); }
 	return 0;
@@ -527,15 +621,17 @@ void __txn_commit_map_print_info(DB_ENV *dbenv, loglvl lvl, int should_lock) {
 
 	if (should_lock) { Pthread_mutex_lock(&txmap->txmap_mutexp); }
 
-	logmsg(lvl, "Highest commit lsn file: %"PRIu32"; "
-					"Highest commit lsn offset: %"PRIu32"; "
+	logmsg(lvl, "Modsnap start lsn file: %"PRIu32"; "
+					"Modsnap start lsn offset: %"PRIu32"; "
 					"Highest checkpoint lsn file: %"PRIu32"; "
 					"Highest checkpoint lsn offset: %"PRIu32"; "
+					"Highest logfile: %"PRId64"; "
 					"Smallest logfile: %"PRId64"\n",
-					txmap->highest_commit_lsn.file,
-					txmap->highest_commit_lsn.offset,
+					txmap->modsnap_start_lsn.file,
+					txmap->modsnap_start_lsn.offset,
 					txmap->highest_checkpoint_lsn.file,
 					txmap->highest_checkpoint_lsn.offset,
+					txmap->highest_logfile,
 					txmap->smallest_logfile);
 
 	if (should_lock) { Pthread_mutex_unlock(&txmap->txmap_mutexp); }
@@ -543,11 +639,16 @@ void __txn_commit_map_print_info(DB_ENV *dbenv, loglvl lvl, int should_lock) {
 
 /*
  * __txn_commit_map_delete_logfile_txns --
- *  Remove all transactions that committed in a specific logfile 
- *  from the commit LSN map.	
+ *	Remove all transactions that committed in a specific logfile 
+ *	from the commit LSN map.	
+ *
+ *	*If this function deletes the transaction with the highest commit LSN, 
+ * then it is the caller's responsibility to call 
+ * `__txn_commit_map_set_modsnap_start_lsn` with the next highest
+ * commit LSN*
  *
  * PUBLIC: int __txn_commit_map_delete_logfile_txns
- * PUBLIC:     __P((DB_ENV *, u_int32_t));
+ * PUBLIC:	   __P((DB_ENV *, u_int32_t));
  */
 int __txn_commit_map_delete_logfile_txns(dbenv, del_log) 
 	DB_ENV *dbenv;
@@ -570,44 +671,12 @@ int __txn_commit_map_delete_logfile_txns(dbenv, del_log)
 		goto err;
 	}
 
-	UTXNID *elt, *tmpp;
-	LISTC_FOR_EACH_SAFE(&to_delete->commit_utxnids, elt, tmpp, lnk)
-	{
-		__txn_commit_map_remove_nolock(dbenv, elt->utxnid);
-		__os_free(dbenv, elt);
+	ret = hash_for(to_delete->commit_utxnids, (hashforfunc_t *const) __txn_commit_map_remove_nolock_foreach_wrapper, (void *) dbenv);
+	if (ret) {
+		goto err;
 	}
 
-	const int i_am_highest_logfile = del_log == txmap->highest_commit_lsn.file;
-	const int i_am_smallest_logfile = del_log == txmap->smallest_logfile;
-
-	if (i_am_highest_logfile && i_am_smallest_logfile)
-	{
-		logmsg(LOGMSG_WARN, "%s: Deleting the only logfile (%"PRIu32") in txmap\n", __func__, del_log);
-
-		ZERO_LSN(txmap->highest_commit_lsn);
-		txmap->smallest_logfile = -1;
-	} else if (i_am_highest_logfile)
-	{
-		logmsg(LOGMSG_WARN, "%s: Deleting the highest logfile (%"PRIu32") in txmap\n", __func__, del_log);
-
-		LOGFILE_TXN_LIST *successor = NULL;
-		for (int prev_log=del_log-1; successor == NULL && prev_log >= 0; --prev_log) {
-			successor = hash_find(txmap->logfile_lists, &prev_log);
-		}
-		assert(successor);
-		txmap->highest_commit_lsn = successor->highest_commit_lsn;
-	} else if (i_am_smallest_logfile)
-	{
-		LOGFILE_TXN_LIST *successor = NULL;
-		while ((successor == NULL) && (++txmap->smallest_logfile <= txmap->highest_commit_lsn.file)) {
-			successor = hash_find(txmap->logfile_lists, &txmap->smallest_logfile);
-		}
-		assert(successor);
-	}
-
-	hash_del(txmap->logfile_lists, to_delete);
-	__os_free(dbenv, to_delete);
-
+	__txn_commit_map_delete_logfile_list(dbenv, to_delete);
 err:
 	Pthread_mutex_unlock(&txmap->txmap_mutexp);
 
@@ -616,10 +685,10 @@ err:
  
 /*
  * __txn_commit_map_get --
- *  Get the commit LSN of a transaction.
+ *	Get the commit LSN of a transaction.
  *
  * PUBLIC: int __txn_commit_map_get
- * PUBLIC:     __P((DB_ENV *, u_int64_t, DB_LSN*));
+ * PUBLIC:	   __P((DB_ENV *, u_int64_t, DB_LSN*));
  */
 int __txn_commit_map_get(dbenv, utxnid, commit_lsn) 
 	DB_ENV *dbenv;
@@ -648,10 +717,10 @@ int __txn_commit_map_get(dbenv, utxnid, commit_lsn)
 
 /*
  * __txn_commit_map_add_nolock --
- *  Store the commit LSN of a transaction.
+ *	Store the commit LSN of a transaction.
  *
  * PUBLIC: int __txn_commit_map_add_nolock
- * PUBLIC:     __P((DB_ENV *, u_int64_t, DB_LSN));
+ * PUBLIC:	   __P((DB_ENV *, u_int64_t, DB_LSN));
  */
 int __txn_commit_map_add_nolock(dbenv, utxnid, commit_lsn) 
 	DB_ENV *dbenv;
@@ -661,7 +730,6 @@ int __txn_commit_map_add_nolock(dbenv, utxnid, commit_lsn)
 	DB_TXN_COMMIT_MAP *txmap;
 	LOGFILE_TXN_LIST *to_delete;
 	UTXNID_TRACK *txn;
-	UTXNID* elt;
 	int ret, alloc_txn, alloc_delete_list, commit_map_debug;
 
 	txmap = dbenv->txmap;
@@ -707,15 +775,9 @@ int __txn_commit_map_add_nolock(dbenv, utxnid, commit_lsn)
 	}
 	alloc_txn = 1;
 
-	if ((ret = __os_malloc(dbenv, sizeof(UTXNID), &elt)) != 0) {
-		ret = ENOMEM;
-		goto err;
-	}
-
 	if (alloc_delete_list) {
-		ZERO_LSN(to_delete->highest_commit_lsn);
 		to_delete->file_num = commit_lsn.file;
-		listc_init(&to_delete->commit_utxnids, offsetof(UTXNID, lnk));
+		to_delete->commit_utxnids = hash_init_o(offsetof(UTXNID_TRACK, utxnid), sizeof(u_int64_t));
 		hash_add(txmap->logfile_lists, to_delete);
 
 		if (commit_lsn.file < txmap->smallest_logfile || txmap->smallest_logfile == -1) {
@@ -723,20 +785,15 @@ int __txn_commit_map_add_nolock(dbenv, utxnid, commit_lsn)
 		}
 	}
 
-	if (log_compare(&txmap->highest_commit_lsn, &commit_lsn) <= 0) {
-		txmap->highest_commit_lsn = commit_lsn;
-	}
-
-	if (log_compare(&to_delete->highest_commit_lsn, &commit_lsn) <= 0) {
-		to_delete->highest_commit_lsn = commit_lsn;
+	if (log_compare(&txmap->modsnap_start_lsn, &commit_lsn) <= 0) {
+		txmap->modsnap_start_lsn = commit_lsn;
+		txmap->highest_logfile = commit_lsn.file;
 	}
 
 	txn->utxnid = utxnid;
 	txn->commit_lsn = commit_lsn;
 	hash_add(txmap->transactions, txn);
-
-	elt->utxnid = utxnid;
-	listc_atl(&to_delete->commit_utxnids, elt);
+	hash_add(to_delete->commit_utxnids, txn);
 	
 	return ret;
 err:
@@ -751,10 +808,10 @@ err:
 
 /*
  * __txn_commit_map_add --
- *  Store the commit LSN of a transaction.
+ *	Store the commit LSN of a transaction.
  *
  * PUBLIC: int __txn_commit_map_add
- * PUBLIC:     __P((DB_ENV *, u_int64_t, DB_LSN));
+ * PUBLIC:	   __P((DB_ENV *, u_int64_t, DB_LSN));
  */
 int __txn_commit_map_add(dbenv, utxnid, commit_lsn) 
 	DB_ENV *dbenv;
@@ -771,6 +828,24 @@ int __txn_commit_map_add(dbenv, utxnid, commit_lsn)
 
 	Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
 	return ret;
+}
+
+/*
+ * __txn_commit_map_set_modsnap_start_lsn --
+ *	Set the highest commit LSN.
+ *
+ * PUBLIC: int __txn_commit_map_set_modsnap_start_lsn
+ * PUBLIC:	   __P((DB_ENV *, DB_LSN));
+ */
+void __txn_commit_map_set_modsnap_start_lsn(dbenv, modsnap_start_lsn)
+	DB_ENV *dbenv;
+	DB_LSN modsnap_start_lsn;
+{
+	DB_TXN_COMMIT_MAP * const txmap = dbenv->txmap;
+
+	Pthread_mutex_lock(&txmap->txmap_mutexp);
+	txmap->modsnap_start_lsn = modsnap_start_lsn;
+	Pthread_mutex_unlock(&txmap->txmap_mutexp);
 }
 
 static inline void __free_prepared_children(DB_ENV *dbenv, DB_TXN_PREPARED *p)
@@ -844,8 +919,8 @@ static int __upgrade_prepared_txn(DB_ENV *dbenv, DB_LOGC *logc, DB_TXN_PREPARED 
 	assert(txnp->txnid == prepare->txnid->txnid);
 	assert(txnp->utxnid == prepare->txnid->utxnid);
 
-    /* Halt replays in the block-processor */
-    osql_blkseq_register_cnonce(p->blkseq_key.data, p->blkseq_key.size);
+	/* Halt replays in the block-processor */
+	osql_blkseq_register_cnonce(p->blkseq_key.data, p->blkseq_key.size);
 
 	if (prepare->lflags & DB_TXN_SCHEMA_LOCK) {
 		wrlock_schema_lk(); 
@@ -1007,7 +1082,7 @@ int __txn_is_dist_committed(dbenv, dist_txnid)
  * to accommodate a commit from a different master.
  *
  * We allocate a dist_txnid structure and in dist_abort as a place holders so that
- * recovery can discriminate between resolved and unresolved prepares.  We mark these
+ * recovery can discriminate between resolved and unresolved prepares.	We mark these
  * with either the DIST_COMMITTED or DIST_ABORTED flag.  After recovery all resolved
  * prepares will pruned.
  *
@@ -1094,7 +1169,7 @@ int __txn_recover_dist_abort(dbenv, dist_txnid)
 /*
  * __txn_master_prepared --
  *
- * Master has prepared a transaction and written a prepare record.  Add this 
+ * Master has prepared a transaction and written a prepare record.	Add this 
  * prepare to the prepared transaction list.
  *
  * PUBLIC: int __txn_master_prepared __P((DB_ENV *,
@@ -1202,7 +1277,7 @@ void __txn_set_prepared_discard(dbenv, dist_txnid)
  *
  * Remove an aborted transaction from the distributed transaction list.
  * This is db_dispatch with the DB_TXN_ABORT flag- it's called both for a normal 
- * txn->abort, and from txn_dbenv_refresh.  This later could abort a recovered
+ * txn->abort, and from txn_dbenv_refresh.	This later could abort a recovered
  * prepare.
  *
  * PUBLIC: int __txn_recover_abort_prepared __P((DB_ENV *,
@@ -1252,7 +1327,7 @@ int __txn_recover_abort_prepared(dbenv, dist_txnid, prep_lsn, blkseq_key, coordi
  * __txn_recover_prepared --
  *
  * Collect prepared transactions during recovery's backward-pass.  We should
- * only run this for aborted and unresolved dist-txns.  There are two cases
+ * only run this for aborted and unresolved dist-txns.	There are two cases
  * that will be handled in this function: 
  *
  * First, if this transaction has a dist-commit record, then this should
@@ -1305,7 +1380,7 @@ int __txn_recover_prepared(dbenv, txnid, dist_txnid, prep_lsn, begin_lsn, blkseq
 	Pthread_mutex_unlock(&dbenv->prepared_txn_lk);
 	if (p) {
 		/* 'aborted-from-recovery': we assert that ABORTED flag is lit above:
-		   !!! TODO !!! need to write dist-abort to blkseq  */
+		   !!! TODO !!! need to write dist-abort to blkseq	*/
 #if defined (DEBUG_PREPARE)
 		logmsg(LOGMSG_USER, "Removing aborted prepare %s from recovered txn list\n", dist_txnid);
 #endif
@@ -1384,8 +1459,8 @@ static int __free_prepared(void *obj, void *arg)
 static int __hash_free_child(void *obj, void *arg)
 {
 	DB_ENV *dbenv = (DB_ENV *)arg;
-    struct __db_txn_prepared_child *c = (struct __db_txn_prepared_child *)obj;
-    listc_rfl(&c->p->children, c);
+	struct __db_txn_prepared_child *c = (struct __db_txn_prepared_child *)obj;
+	listc_rfl(&c->p->children, c);
 	__os_free(dbenv, obj);
 	return 0;
 }
@@ -1509,7 +1584,7 @@ int __txn_recover_all_prepared(dbenv)
  * __txn_upgrade_all_prepared --
  *
  * Create berkley txns for unresolved but prepared transactions we found
- * during recovery.  Acquire locks for these transactions.  Update the 
+ * during recovery.  Acquire locks for these transactions.	Update the 
  * transaction id-space and write a txn-recycle record
  *
  * PUBLIC: int __txn_upgrade_all_prepared __P((DB_ENV *));
@@ -1620,11 +1695,11 @@ int __txn_abort_recovered(dbenv, dist_txnid)
 		abort();
 	}
 
-    /* Write blkseq record for aborted prepare */
-    dist_txn_abort_write_blkseq(dbenv->app_private, p->blkseq_key.data, p->blkseq_key.size);
+	/* Write blkseq record for aborted prepare */
+	dist_txn_abort_write_blkseq(dbenv->app_private, p->blkseq_key.data, p->blkseq_key.size);
 
-    /* Unregister cnonce */
-    osql_blkseq_unregister_cnonce(p->blkseq_key.data, p->blkseq_key.size);
+	/* Unregister cnonce */
+	osql_blkseq_unregister_cnonce(p->blkseq_key.data, p->blkseq_key.size);
 
 	/* Avoid surprise children */
 	F_SET(p->txnp, TXN_CHILDCOMMIT);
@@ -1712,7 +1787,7 @@ int __txn_lowest_prepared_lsn(dbenv, lsn)
 
 static void add_child(DB_ENV *dbenv, DB_TXN_PREPARED *p, u_int64_t cutxnid)
 {
-    int ret;
+	int ret;
 	struct __db_txn_prepared_child *c = hash_find(dbenv->prepared_children, &cutxnid);
 	if (c != NULL) {
 #if defined (DEBUG_PREPARE)
@@ -1741,7 +1816,7 @@ static void add_child(DB_ENV *dbenv, DB_TXN_PREPARED *p, u_int64_t cutxnid)
  * Unresolved-prepares are rolled-back, but they can't reclaim allocated pages,
  * as this could eventually commit.  This function records child-tranids of 
  * unresolved prepares in the 'prepared_children' hash so that pg_alloc_recover
- * won't add the allocated pages to limbo.  We will add them to the freelist if
+ * won't add the allocated pages to limbo.	We will add them to the freelist if
  * the prepared-txn aborts.
  *
  * PUBLIC: int __txn_add_prepared_child __P((DB_ENV *, u_int64_t, u_int64_t));
@@ -1899,7 +1974,7 @@ int __rep_commit_dist_prepared(dbenv, dist_txnid)
 /* 
  * __rep_abort_dist_prepared --
  *
- * Replication saw a dist-abort for this prepared txn.  Write the blkseq
+ * Replication saw a dist-abort for this prepared txn.	Write the blkseq
  * and remove it from the prepared-txn list.
  *
  * PUBLIC: int __rep_abort_dist_prepared __P((DB_ENV *, const char *, ));
@@ -1928,7 +2003,7 @@ int __rep_abort_dist_prepared(dbenv, dist_txnid)
 #endif
 	}
 
-    dist_txn_abort_write_blkseq(dbenv->app_private, p->blkseq_key.data, p->blkseq_key.size);
+	dist_txn_abort_write_blkseq(dbenv->app_private, p->blkseq_key.data, p->blkseq_key.size);
 	assert(!F_ISSET(p, DB_DIST_HAVELOCKS));
 	__free_prepared_txn(dbenv, p);
 	return 0;
@@ -1954,7 +2029,7 @@ static int __abort_waiters(void *obj, void *arg)
  * __txn_abort_prepared_waiters --
  *
  * To downgrade, a master must force all non-prepared transactions to abort,
- * and then subsequently unroll prepared transactions.  This routine returns
+ * and then subsequently unroll prepared transactions.	This routine returns
  * deadlock to any transaction which is blocked on a prepared transaction.
  *
  * PUBLIC: int __txn_abort_prepared_waiters __P((DB_ENV *));
@@ -1988,7 +2063,7 @@ int __txn_commit_recovered(dbenv, dist_txnid)
 #if defined (DEBUG_PREPARE)
 	comdb2_cheapstack_sym(stderr, "%s", __func__);
 #endif
-    int commit_lsn_map = get_commit_lsn_map_switch_value();
+	int commit_lsn_map = get_commit_lsn_map_switch_value();
 	DB_TXN_PREPARED *p;
 	Pthread_mutex_lock(&dbenv->prepared_txn_lk);
 	if ((p = hash_find(dbenv->prepared_txn_hash, &dist_txnid)) != NULL) {
@@ -2063,11 +2138,11 @@ int __txn_commit_recovered(dbenv, dist_txnid)
 	int had_serializable_records = 0;
 	void *txninfo = NULL;
 
-    if ((ret = __os_malloc(dbenv, sizeof(LISTC_T(UTXNID)), &lc.child_utxnids)) != 0) {
-        logmsg(LOGMSG_FATAL, "Error allocating memory for child-utxnids\n");
-        abort();
-    }
-    listc_init(lc.child_utxnids, offsetof(UTXNID, lnk));
+	if ((ret = __os_malloc(dbenv, sizeof(LISTC_T(UTXNID)), &lc.child_utxnids)) != 0) {
+		logmsg(LOGMSG_FATAL, "Error allocating memory for child-utxnids\n");
+		abort();
+	}
+	listc_init(lc.child_utxnids, offsetof(UTXNID, lnk));
 
 	if ((ret = __rep_collect_txn(dbenv, &p->prepare_lsn, &lc, &had_serializable_records, NULL)) != 0) {
 		logmsg(LOGMSG_FATAL, "Error collecting dist-txn %s, LSN %d:%d\n", p->dist_txnid,
@@ -2110,29 +2185,29 @@ int __txn_commit_recovered(dbenv, dist_txnid)
 		}
 	}
 
-    /* Update commit-lsn map */
-    Pthread_mutex_lock(&dbenv->txmap->txmap_mutexp);
-    if (commit_lsn_map) {
+	/* Update commit-lsn map */
+	Pthread_mutex_lock(&dbenv->txmap->txmap_mutexp);
+	if (commit_lsn_map) {
 
-        if ((ret = __txn_commit_map_add_nolock(dbenv, p->utxnid, lsn_out)) != 0) {
-            logmsg(LOGMSG_FATAL, "Error adding commit-lsn map for txn %"PRIu64"\n", p->utxnid);
-            abort();
-        }
+		if ((ret = __txn_commit_map_add_nolock(dbenv, p->utxnid, lsn_out)) != 0) {
+			logmsg(LOGMSG_FATAL, "Error adding commit-lsn map for txn %"PRIu64"\n", p->utxnid);
+			abort();
+		}
 
-        if (lc.child_utxnids != NULL) {
-            UTXNID *elt;
-            LISTC_FOR_EACH(lc.child_utxnids, elt, lnk) {
-                if ((ret = __txn_commit_map_add_nolock(dbenv, elt->utxnid, lsn_out)) != 0) {
-                    logmsg(LOGMSG_FATAL, "Error adding commit-lsn map for txn %"PRIu64"\n", p->utxnid);
-                    abort();
-                }
-            }
-        }
-    }
-    Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
+		if (lc.child_utxnids != NULL) {
+			UTXNID *elt;
+			LISTC_FOR_EACH(lc.child_utxnids, elt, lnk) {
+				if ((ret = __txn_commit_map_add_nolock(dbenv, elt->utxnid, lsn_out)) != 0) {
+					logmsg(LOGMSG_FATAL, "Error adding commit-lsn map for txn %"PRIu64"\n", p->utxnid);
+					abort();
+				}
+			}
+		}
+	}
+	Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
 
-    /* Unregister cnonce */
-    osql_blkseq_unregister_cnonce(p->blkseq_key.data, p->blkseq_key.size);
+	/* Unregister cnonce */
+	osql_blkseq_unregister_cnonce(p->blkseq_key.data, p->blkseq_key.size);
 
 	DB_LOCKREQ request = {.op = DB_LOCK_PUT_ALL};
 
@@ -2149,6 +2224,6 @@ int __txn_commit_recovered(dbenv, dist_txnid)
 	}
 
 	__free_prepared_txn(dbenv, p);
-    lc_free(dbenv, NULL, &lc);
+	lc_free(dbenv, NULL, &lc);
 	return 0;
 }

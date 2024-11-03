@@ -93,6 +93,7 @@ extern int gbl_sparse_lockerid_map;
 extern int gbl_spstrictassignments;
 extern int gbl_early;
 extern int gbl_exit_alarm_sec;
+extern int gbl_fdb_default_ver;
 extern int gbl_fdb_track;
 extern int gbl_fdb_track_hints;
 extern int gbl_forbid_ulonglong;
@@ -101,6 +102,7 @@ extern int gbl_fdb_allow_cross_classes;
 extern int gbl_fdb_resolve_local;
 extern int gbl_fdb_push_redirect_foreign;
 extern int gbl_fdb_push_remote;
+extern int gbl_fdb_remsql_cdb2api;
 extern int gbl_goslow;
 extern int gbl_heartbeat_send;
 extern int gbl_keycompr;
@@ -230,6 +232,7 @@ extern int gbl_last_locked_seqnum;
 extern int gbl_set_coherent_state_trace;
 extern int gbl_incoherent_slow_inactive_timeout;
 extern int gbl_force_incoherent;
+extern int gbl_force_incoherent_master;
 extern int gbl_ignore_coherency;
 extern int gbl_skip_catchup_logic;
 extern int gbl_debug_downgrade_cluster_at_open;
@@ -316,6 +319,7 @@ extern int gbl_ufid_dbreg_test;
 extern int gbl_debug_add_replication_latency;
 extern int gbl_javasp_early_release;
 extern int gbl_debug_drop_nth_rep_message;
+extern int gbl_fdb_emulate_old;
 
 extern long long sampling_threshold;
 
@@ -453,6 +457,10 @@ extern int gbl_fdb_io_error_retries_phase_2_poll;
 extern int gbl_fdb_auth_enabled;
 extern int gbl_debug_invalid_genid;
 
+/* Tranlog */
+extern int gbl_tranlog_incoherent_timeout;
+extern int gbl_tranlog_maxpoll;
+
 /* Physical replication */
 extern int gbl_blocking_physrep;
 extern int gbl_physrep_check_minlog_freq_sec;
@@ -461,6 +469,8 @@ extern int gbl_physrep_exit_on_invalid_logstream;
 extern int gbl_physrep_fanout;
 extern int gbl_physrep_hung_replicant_check_freq_sec;
 extern int gbl_physrep_hung_replicant_threshold;
+extern int gbl_physrep_revconn_check_interval;
+extern int gbl_physrep_update_registry_interval;
 extern int gbl_physrep_i_am_metadb;
 extern int gbl_physrep_keepalive_freq_sec;
 extern int gbl_physrep_max_candidates;
@@ -470,10 +480,17 @@ extern int gbl_physrep_register_interval;
 extern int gbl_physrep_shuffle_host_list;
 extern int gbl_physrep_ignore_queues;
 
+/* source-name / host is from lrl */
 extern char *gbl_physrep_source_dbname;
 extern char *gbl_physrep_source_host;
+
+/* meta-name / host is from lrl */
 extern char *gbl_physrep_metadb_name;
 extern char *gbl_physrep_metadb_host;
+
+/* repl-name / host is the active connection */
+extern char *gbl_physrep_repl_name;
+extern char *gbl_physrep_repl_host;
 
 /* Reversql connection/sql */
 extern int gbl_revsql_allow_command_exec;
@@ -1057,6 +1074,17 @@ static int hostname_update(void *context, void *value)
     *(char **)tunable->var = intern((char *)value);
     return 0;
 }
+
+static int fdb_default_ver_update(void *context, void *value)
+{
+    comdb2_tunable *tunable = (comdb2_tunable *)context;
+    int val = *(int*)value;
+    if (fdb_default_ver_set(val))
+        return -1;
+    *(int*)tunable->var = val;
+    return 0;
+}
+
 
 /* Forward declaration */
 int ctrace_set_rollat(void *unused, void *value);

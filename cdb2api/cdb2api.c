@@ -2162,10 +2162,21 @@ static inline int cdb2_hostid()
     return _MACHINE_ID;
 }
 
+typedef enum {
+    NEWSQL_STATE_NONE = 0,
+    /* Query is making progress. Applicable only when type is HEARTBEAT */
+    NEWSQL_STATE_ADVANCING,
+    /* RESET from in-process cache. Applicable only when type is RESET */
+    NEWSQL_STATE_LOCALCACHE
+} newsql_state;
+
 static int send_reset(SBUF2 *sb)
 {
     int rc = 0;
-    struct newsqlheader hdr = {.type = ntohl(CDB2_REQUEST_TYPE__RESET)};
+    struct newsqlheader hdr = {
+        .type = ntohl(CDB2_REQUEST_TYPE__RESET),
+        .state = ntohl(NEWSQL_STATE_NONE)
+    };
     rc = sbuf2fwrite((char *)&hdr, sizeof(hdr), 1, sb);
     if (rc != 1) {
         return -1;
@@ -4347,20 +4358,22 @@ static int process_set_command(cdb2_hndl_tp *hndl, const char *sql)
         char *dup_sql = strdup(sql + skip_len);
         char *rest = NULL;
         char *set_tok = strtok_r(dup_sql, " ", &rest);
-        /* special case for spversion */
-        if (set_tok && strcasecmp(set_tok, "spversion") == 0) {
-            skip_len += 10;
-            set_tok = strtok_r(rest, " ", &rest);
-        }
-        /* special case for transaction chunk */
-        if (set_tok && strncasecmp(set_tok, "transaction", 11) == 0) {
-            char *set_tok2 = strtok_r(rest, " ", &rest);
-            if (set_tok2 && strncasecmp(set_tok2, "chunk", 5) == 0) {
-                /* skip "transaction" if chunk, set we can set
-                 * both transaction and chunk mode
-                 */
-                skip_len += 12;
-                set_tok = set_tok2;
+        if (set_tok) {
+            /* special case for spversion */
+            if (strcasecmp(set_tok, "spversion") == 0) {
+                skip_len += 10;
+                set_tok = strtok_r(rest, " ", &rest);
+            /* special case for transaction chunk */
+            } else if (strncasecmp(set_tok, "transaction", 11) == 0) {
+                char *set_tok2 = strtok_r(rest, " ", &rest);
+                if (set_tok2 && strncasecmp(set_tok2, "chunk", 5) == 0) {
+                    /* skip "transaction" if chunk, set we can set
+                     * both transaction and chunk mode
+                     */
+                    skip_len += 12;
+                    set_tok = set_tok2;
+                    set_tok2 = NULL;
+                }
             }
         }
         if (!set_tok) {

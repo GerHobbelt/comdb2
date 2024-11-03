@@ -1266,7 +1266,7 @@ struct osql_sess {
 
     int verify_retries; /* how many times we verify retried this one */
     blocksql_tran_t *tran;
-    int is_tranddl;
+    LISTC_T(struct schema_change_type) scs; /* schema changes in session */
     int is_tptlock;   /* needs tpt locking */
     int is_cancelled; /* 1 if session is cancelled */
 
@@ -1413,6 +1413,7 @@ struct ireq {
     tran_type *sc_tran;
     tran_type *sc_close_tran;
     struct schema_change_type *sc_pending;
+    LISTC_T(struct schema_change_type) scs; /* all schema changes in this txn */
     double cost;
     uint64_t sc_seed;
     uint32_t sc_host;
@@ -1582,6 +1583,7 @@ typedef struct {
 /* global settings */
 extern int gbl_sc_timeoutms;
 extern int gbl_trigger_timepart;
+extern int gbl_multitable_ddl;
 
 extern int64_t gbl_num_auth_allowed;
 extern int64_t gbl_num_auth_denied;
@@ -3665,7 +3667,7 @@ extern int gbl_sqlite_makerecord_for_comdb2;
 void dump_client_sql_data(struct reqlogger *logger, int do_snapshot);
 
 int backout_schema_changes(struct ireq *iq, tran_type *tran);
-int bplog_schemachange(struct ireq *iq, blocksql_tran_t *tran, void *err);
+int bplog_schemachange(struct ireq *iq);
 
 extern int gbl_abort_invalid_query_info_key;
 extern int gbl_is_physical_replicant;
@@ -3684,9 +3686,21 @@ extern int gbl_server_admin_mode;
 
 void csc2_free_all(void);
 
+int fdb_default_ver_set(int val);
+
 /* hack to temporary allow bools on production stage */
 void csc2_allow_bools(void);
 void csc2_disallow_bools(void);
 int csc2_used_bools(void);
+
+/* Skip spaces and tabs, requires at least one space */
+static inline char *skipws(char *str)
+{
+    if (str) {
+        while (*str && isspace(*str))
+            str++;
+    }
+    return str;
+}
 
 #endif /* !INCLUDED_COMDB2_H */

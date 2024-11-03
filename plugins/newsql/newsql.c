@@ -26,6 +26,7 @@
 #include "sp.h"
 #include "sql.h"
 #include "sqloffload.h"
+#include "fdb_fend.h"
 
 #include "newsql.h"
 
@@ -227,8 +228,8 @@ static struct query_effects *newsql_get_query_effects(struct sqlclntstate *clnt)
     if (newsql_has_high_availability(clnt)) {                                  \
         int file = 0, offset = 0;                                              \
         if (clnt->modsnap_in_progress) {                                       \
-            file = clnt->last_commit_lsn_file;                                 \
-            offset = clnt->last_commit_lsn_offset;                             \
+            file = clnt->modsnap_start_lsn_file;                                 \
+            offset = clnt->modsnap_start_lsn_offset;                             \
         } else if (fill_snapinfo(clnt, &file, &offset)) {                      \
             sql_response.error_code = (char)CDB2ERR_CHANGENODE;                \
         }                                                                      \
@@ -238,16 +239,6 @@ static struct query_effects *newsql_get_query_effects(struct sqlclntstate *clnt)
             sql_response.snapshot_info = &snapshotinfo;                        \
         }                                                                      \
     }
-
-/* Skip spaces and tabs, requires at least one space */
-static inline char *skipws(char *str)
-{
-    if (str) {
-        while (*str && isspace(*str))
-            str++;
-    }
-    return str;
-}
 
 int gbl_abort_on_unset_ha_flag = 0;
 static int is_snap_uid_retry(struct sqlclntstate *clnt)
@@ -369,15 +360,14 @@ static int get_col_type(struct sqlclntstate *clnt, sqlite3_stmt *stmt, int col,
 }
 
 #define MAX_COL_NAME_LEN 31
-#define ADJUST_LONG_COL_NAME(appdata, n, l)                                    \
-    do {                                                                       \
-        if ((l > MAX_COL_NAME_LEN) &&                                          \
-            ((gbl_return_long_column_names == 0) ||                            \
-             (appdata->protocol_version == 1 /* fastsql */))) {                \
-            l = MAX_COL_NAME_LEN + 1;                                          \
-            char *namebuf = alloca(l);                                         \
-            n = strncpy0(namebuf, n, l);                                       \
-        }                                                                      \
+#define ADJUST_LONG_COL_NAME(clnt_return_long_column_names, appdata, n, l)                                             \
+    do {                                                                                                               \
+        if ((l > MAX_COL_NAME_LEN) && ((!clnt_return_long_column_names && gbl_return_long_column_names == 0) ||        \
+                                       (appdata->protocol_version == 1 /* fastsql */))) {                              \
+            l = MAX_COL_NAME_LEN + 1;                                                                                  \
+            char *namebuf = alloca(l);                                                                                 \
+            n = strncpy0(namebuf, n, l);                                                                               \
+        }                                                                                                              \
     } while (0)
 
 static int newsql_columns(struct sqlclntstate *clnt, sqlite3_stmt *stmt)
@@ -392,7 +382,7 @@ static int newsql_columns(struct sqlclntstate *clnt, sqlite3_stmt *stmt)
         cdb2__sqlresponse__column__init(&cols[i]);
         const char *name = sqlite3_column_name(stmt, i);
         size_t len = strlen(name) + 1;
-        ADJUST_LONG_COL_NAME(appdata, name, len);
+        ADJUST_LONG_COL_NAME(clnt->return_long_column_names, appdata, name, len);
         cols[i].value.data = (uint8_t *)name;
         cols[i].value.len = len;
         cols[i].has_type = 1;
@@ -448,7 +438,7 @@ static int newsql_columns_lua(struct sqlclntstate *clnt,
         cdb2__sqlresponse__column__init(&cols[i]);
         const char *name = sp_column_name(arg, i);
         size_t len = strlen(name) + 1;
-        ADJUST_LONG_COL_NAME(appdata, name, len);
+        ADJUST_LONG_COL_NAME(clnt->return_long_column_names, appdata, name, len);
         cols[i].value.data = (uint8_t *)name;
         cols[i].value.len = len;
         cols[i].has_type = 1;
@@ -1548,6 +1538,7 @@ int process_set_commands(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
     char *sqlstr = NULL;
     char *endp;
     int rc = 0;
+    int tmp;
     num_commands = sql_query->n_set_flags;
     for (int ii = 0; ii < num_commands && rc == 0; ii++) {
         sqlstr = sql_query->set_flags[ii];
@@ -1564,7 +1555,6 @@ int process_set_commands(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
                 sqlstr = skipws(sqlstr);
 
                 if (strncasecmp(sqlstr, "chunk", 5) == 0) {
-                    int tmp;
                     sqlstr += 5;
                     sqlstr = skipws(sqlstr);
 
@@ -1953,6 +1943,13 @@ int process_set_commands(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
                 } else {
                     rc = ii + 1;
                 }
+            } else if (strncasecmp(sqlstr, "remsql_", 7) == 0) {
+                sqlstr += 7;
+
+                clnt->remsql_set.is_remsql = 1;
+                if (process_fdb_set_cdb2api(clnt, sqlstr, err, sizeof(err))) {
+                    rc = ii + 1;
+                }
             } else if (strncasecmp(sqlstr, "typessql", 8) == 0) {
                 sqlstr += 8;
                 sqlstr = skipws(sqlstr);
@@ -1961,10 +1958,17 @@ int process_set_commands(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
                 } else {
                     clnt->typessql = 1;
                 }
+            } else if (strncasecmp(sqlstr, "return_long_column_names", 24) == 0) {
+                sqlstr += 24;
+                sqlstr = skipws(sqlstr);
+                if (strncasecmp(sqlstr, "off", 3) == 0) {
+                    clnt->return_long_column_names = 0;
+                } else {
+                    clnt->return_long_column_names = 1;
+                }
             } else {
                 rc = ii + 1;
             }
-
             if (rc) {
                 if (err[0] == '\0')
                     snprintf(err, sizeof(err) - 1, "Invalid set command '%s'",
@@ -2001,7 +2005,7 @@ int forward_set_commands(struct sqlclntstate *clnt, cdb2_hndl_tp *hndl,
 
 int newsql_heartbeat(struct sqlclntstate *clnt)
 {
-    int state;
+    int state = NEWSQL_STATE_NONE;
 
     if (!clnt->heartbeat)
         return 0;
@@ -2010,9 +2014,10 @@ int newsql_heartbeat(struct sqlclntstate *clnt)
 
     /* We're still in a good state if we're just waiting for the client to consume an event. */
     if (is_pingpong(clnt))
-        state = 1;
+        state = NEWSQL_STATE_ADVANCING;
     else {
-        state = (clnt->sqltick > clnt->sqltick_last_seen);
+        if (clnt->sqltick > clnt->sqltick_last_seen)
+            state = NEWSQL_STATE_ADVANCING;
         clnt->sqltick_last_seen = clnt->sqltick;
     }
 

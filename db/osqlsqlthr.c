@@ -1476,7 +1476,7 @@ static int osql_send_qblobs_logic(struct BtCursor *pCur, osqlstate_t *osql,
             if (idx >= 0 && idx < ncols && -1 == updCols[idx + 1]) {
                 /* Put a token on the network if this isn't going to be used */
                 rc = osql_send_qblob(&osql->target, osql->rqid, osql->uuid, i,
-                                     pCur->genid, nettype, NULL, -2);
+                                     pCur->genid, nettype, NULL, OSQL_BLOB_FILLER_LENGTH);
                 if (rc)
                     break; /* break out from while loop so we can return rc */
                 osql->replicant_numops++;
@@ -1844,12 +1844,8 @@ int osql_schemachange_logic(struct schema_change_type *sc,
 
         START_SOCKSQL;
 
-        /* we do not have an uuid before the socksql bplog is started */
-        if (!bdb_attr_get(thedb->bdb_attr, BDB_ATTR_SC_RESUME_AUTOCOMMIT) ||
-                in_client_trans(clnt)) {
-            sc->rqid = osql->rqid;
-            comdb2uuidcpy(sc->uuid, osql->uuid);
-        }
+        sc->rqid = OSQL_RQID_USE_UUID;
+        comdb2uuidcpy(sc->uuid, osql->uuid);
 
         do {
             rc = osql_send_schemachange(&osql->target, osql->rqid,

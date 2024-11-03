@@ -428,7 +428,7 @@ int add_record(struct ireq *iq, void *trans, const uint8_t *p_buf_tag_name,
         if (iq->debug)
             reqprintf(iq, "SET MASTER COLUMNS DEADLOCK");
         retrc = RC_INTERNAL_RETRY;
-        ERR("set master columns dedalock", 0);
+        ERR("set master columns deadlock", 0);
     } else if (rc == BDBERR_MAX_SEQUENCE) {
         reqerrstr(iq, ERR_INTERNAL, "Exhausted column sequence");
         *opfailcode = ERR_INTERNAL;
@@ -464,11 +464,17 @@ int add_record(struct ireq *iq, void *trans, const uint8_t *p_buf_tag_name,
         ERR("validate server record rc %d", rc);
     }
 
-    if ((rec_flags & OSQL_IGNORE_FAILURE) != 0) {
+    if (rec_flags & OSQL_IGNORE_FAILURE) {
         rc = check_for_upsert(iq, trans, blobs, maxblobs, opfailcode, ixfailnum, &retrc, od_dta, od_len, ins_keys,
                               rec_flags);
         if (rc)
             ERR("check_for_upsert rc %d", rc);
+    } else if (rec_flags & OSQL_FORCE_VERIFY) {
+        int upsert_idx = rec_flags >> 8;
+        if (upsert_idx <= MAXINDEX) {
+            rc = check_index(iq, trans, upsert_idx, blobs, maxblobs, opfailcode, ixfailnum, &retrc, od_dta, od_len, ins_keys);
+            if (rc) ERR("check_for_upsert rc %d", rc);
+        }
     }
 
     if (is_event_from_sc(flags) && (flags & RECFLAGS_ADD_FROM_SC_LOGICAL) &&
@@ -2101,6 +2107,9 @@ int upd_new_record(struct ireq *iq, void *trans, unsigned long long oldgenid,
         }
 
         for (int i = 0; i != MAXBLOBS; ++i) {
+            /* skip empty blob tokens */
+            if (blobs[i].exists && blobs[i].length == OSQL_BLOB_FILLER_LENGTH)
+                continue;
             /* unodhfy in case we need to perform a type conversion (e.g., from blob to blob2) */
             rc = unodhfy_and_clone(iq->usedb, &blobs[i], &outblobs[i], i);
             if (rc != 0) {
@@ -2577,7 +2586,7 @@ static int check_blob_buffers(struct ireq *iq, blob_buffer_t *blobs, size_t maxb
             }
 
             /* If this is an osql optimized blob, we get a free pass. */
-            if (0xfffffffe == (int)blobs[cblob].length) {
+            if (OSQL_BLOB_FILLER_LENGTH == blobs[cblob].length) {
                 inconsistent = 0;
             }
             /* if we found a schema earlier, and this blob is a vutf8 string,
@@ -2614,7 +2623,7 @@ static int check_blob_buffers(struct ireq *iq, blob_buffer_t *blobs, size_t maxb
 static int check_blob_sizes(struct ireq *iq, blob_buffer_t *blobs, int maxblobs)
 {
     for (int i = 0; i < maxblobs; i++) {
-        if (blobs[i].exists && blobs[i].length != -2 &&
+        if (blobs[i].exists && blobs[i].length != OSQL_BLOB_FILLER_LENGTH &&
             blobs[i].length > MAXBLOBLENGTH) {
             reqerrstr(iq, COMDB2_ADD_RC_INVL_BLOB,
                       "blob size (%zu) exceeds maximum (%d)", blobs[i].length,

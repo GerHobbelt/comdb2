@@ -625,6 +625,15 @@ struct user {
     uint8_t bypass_auth;
 };
 
+struct remsql_set {
+    int is_remsql;
+    int server_version;
+    int table_version;
+    int is_schema;
+    char tablename[MAXTABLELEN];
+    uuid_t uuid;
+    struct errstat xerr;
+};
 
 #define in_client_trans(clnt) ((clnt)->in_client_trans)
 struct string_ref;
@@ -939,6 +948,8 @@ struct sqlclntstate {
     unsigned can_redirect_fdb: 1;
     unsigned force_fdb_push_redirect : 1; // this should only be set if can_redirect_fdb is true
     unsigned force_fdb_push_remote : 1;
+    unsigned return_long_column_names : 1; // if 0 then tunable decides
+    unsigned in_local_cache : 1;
 
     char *sqlengine_state_file;
     int sqlengine_state_line;
@@ -950,9 +961,9 @@ struct sqlclntstate {
     int64_t last_cost;
     int disable_fdb_push;
 
-    /* Commit LSN prior to modsnap start point */
-    uint32_t last_commit_lsn_file; 
-    uint32_t last_commit_lsn_offset;
+    /* Modsnap start point */
+    uint32_t modsnap_start_lsn_file; 
+    uint32_t modsnap_start_lsn_offset;
 
     /* Checkpoint LSN prior to modsnap start point */
     uint32_t last_checkpoint_lsn_file;
@@ -964,6 +975,8 @@ struct sqlclntstate {
 
     int lastresptype;
     char *externalAuthUser;
+
+    struct remsql_set remsql_set;
 
     // fdb 2pc
     int use_2pc;
@@ -1244,6 +1257,7 @@ struct connection_info {
     int time_in_state_int;
     enum connection_state state_int;
     int64_t in_transaction;
+    int64_t in_local_cache;
 };
 
 /* makes master swing verbose */
