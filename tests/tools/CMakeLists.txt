@@ -9,6 +9,7 @@ include_directories(
   ${PROJECT_SOURCE_DIR}/datetime
   ${PROJECT_SOURCE_DIR}/mem
   ${PROJECT_BINARY_DIR}/protobuf
+  ${PROJECT_SOURCE_DIR}/util
   ${PROTOBUF-C_INCLUDE_DIR}
   ${SQLite3_INCLUDE_DIRS}
   ${OPENSSL_INCLUDE_DIR}
@@ -97,6 +98,11 @@ list(APPEND common-deps
   crc32c
 )
 
+if (NOT COMDB2_SKIP_CDB2API_SO)
+  add_library(api_hello_world_lib SHARED api_hello_world_lib.c)
+  list(APPEND test-tools api_hello_world_lib)
+endif()
+
 foreach(executable ${test-tools})
   if (COMDB2_BBCMAKE)
     target_link_libraries(${executable} opencdb2api ${common-deps})
@@ -106,9 +112,6 @@ foreach(executable ${test-tools})
 endforeach()
 
 if(NOT COMDB2_SKIP_CDB2API_SO)
-  add_library(api_hello_world_lib SHARED api_hello_world_lib.c)
-  list(APPEND test-tools api_hello_world_lib)
-
   add_exe(api_libs api_libs.c)
   target_link_libraries(api_libs cdb2api_shared ${common-deps})
 

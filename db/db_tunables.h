@@ -1115,6 +1115,8 @@ REGISTER_TUNABLE("sort_nulls_with_header",
                  NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("spfile", NULL, TUNABLE_STRING, &gbl_spfile_name, READONLY,
                  NULL, NULL, file_update, NULL);
+REGISTER_TUNABLE("version_spfile", NULL, TUNABLE_STRING, &gbl_user_vers_spfile_name, READONLY, NULL, NULL, file_update,
+                 NULL);
 REGISTER_TUNABLE("timepartitions", NULL, TUNABLE_STRING,
                  &gbl_timepart_file_name, READONLY, NULL, NULL, file_update,
                  NULL);
@@ -1420,10 +1422,10 @@ REGISTER_TUNABLE("abort_on_unset_ha_flag",
                  "Abort in snap_uid_retry if ha is unset. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_abort_on_unset_ha_flag, INTERNAL, NULL,
                  NULL, NULL, NULL);
-REGISTER_TUNABLE("write_dummy_trace",
-                 "Print trace when doing a dummy write. (Default: off)",
-                 TUNABLE_BOOLEAN, &gbl_write_dummy_trace, INTERNAL, NULL, NULL,
-                 NULL, NULL);
+REGISTER_TUNABLE("abort_on_ufid_mismatch", "Abort in dbreg-open on ufid mismatch. (Default: on)", TUNABLE_BOOLEAN,
+                 &gbl_abort_on_ufid_mismatch, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("write_dummy_trace", "Print trace when doing a dummy write. (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_write_dummy_trace, INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("seed_genid", "Set genid-seed in hex for genid48 test.",
                  TUNABLE_STRING, NULL, EXPERIMENTAL | INTERNAL,
                  next_genid_value, NULL, genid_seed_update, NULL);
@@ -1947,6 +1949,10 @@ REGISTER_TUNABLE("revsql_connect_freq_sec", "This node will attempt to (reverse)
                  "connect to the remote host at this frequency. (Default: 5secs)",
                  TUNABLE_INTEGER, &gbl_revsql_connect_freq_sec, EXPERIMENTAL | INTERNAL,
                  NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("revsql_force_rte", "Force reverse sql connections to use rte. (Default: on)", TUNABLE_BOOLEAN,
+                 &gbl_revsql_force_rte, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("connect_remote_rte", "Connect to remote nodes using rte. (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_connect_remote_rte, 0, 0, 0, 0, 0);
 REGISTER_TUNABLE("revsql_debug",
                  "Print extended reversql-sql trace. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_revsql_debug, EXPERIMENTAL | INTERNAL,
@@ -2275,11 +2281,6 @@ REGISTER_TUNABLE("lua_prepare_retry_sleep",
                  TUNABLE_INTEGER, &gbl_lua_prepare_retry_sleep,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE("dump_sql_on_repwait_sec",
-                 "Dump sql queries that are blocking the replication thread "
-                 "for more than this duration (Default: 10secs)",
-                 TUNABLE_INTEGER, &gbl_dump_sql_on_repwait_sec, EXPERIMENTAL, NULL, NULL, NULL, NULL);
-
 REGISTER_TUNABLE("client_queued_slow_seconds",
                  "If a client connection remains \"queued\" longer than this "
                  "period of time (in seconds), it is considered to be \"slow\", "
@@ -2547,4 +2548,6 @@ REGISTER_TUNABLE("sc_history_max_rows", "Max number of rows returned in comdb2_s
                  TUNABLE_INTEGER, &gbl_sc_history_max_rows, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sc_status_max_rows", "Max number of rows returned in comdb2_sc_status (Default: 1000)",
                  TUNABLE_INTEGER, &gbl_sc_status_max_rows, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("rep_process_pstack_time", "pstack the server if rep_process runs longer than time specified in secs (Default: 30s)",
+                 TUNABLE_INTEGER, &gbl_rep_process_pstack_time, 0, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

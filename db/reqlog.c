@@ -1497,7 +1497,6 @@ void reqlog_new_sql_request(struct reqlogger *logger, struct string_ref *sr)
     logger->startprcsus = logger->startus;
     reqlog_start_request(logger);
 
-    logger->nsqlreqs = ATOMIC_LOAD32(gbl_nnewsql);
     if (sr) {
         reqlog_set_sql(logger, sr);
     }
@@ -2211,7 +2210,8 @@ void reqlog_end_request(struct reqlogger *logger, int rc, const char *callfunc,
             if (last_long_request_epoch != comdb2_time_epoch()) {
                 last_long_request_epoch = comdb2_time_epoch();
 
-                if (long_request_out != default_out && long_request_thresh && logger->clnt && !can_consume(logger->clnt)) {
+                if (long_request_out != default_out && long_request_thresh && logger->clnt &&
+                    !can_consume(logger->clnt) && !logger->clnt->force_readonly) {
 
                     if (logger->iq && logger->iq->sorese) {
                         char *sqlinfo = osql_sess_info(logger->iq->sorese);

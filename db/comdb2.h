@@ -25,6 +25,7 @@
 #define MAXVER 255
 
 #define SP_FILE_NAME "stored_procedures.sp"
+#define SP_VERS_FILE_NAME "vers_stored_procedures.sp"
 #define TIMEPART_FILE_NAME "time_partitions.tp"
 #define REPOP_QDB_FMT "%s/%s.%d.queuedb" /* /dir/dbname.num.ext */
 
@@ -638,27 +639,25 @@ typedef struct dbtable {
     void *meta;
 
     /*counters*/
-    unsigned typcnt[MAXTYPCNT + 1];
-    unsigned blocktypcnt[BLOCK_MAXOPCODE];
-    unsigned blockosqltypcnt[MAX_OSQL_TYPES];
-    unsigned nsql;  // counter for queries to this table 
+    int64_t typcnt[MAXTYPCNT + 1];
+    int64_t blocktypcnt[BLOCK_MAXOPCODE];
+    int64_t blockosqltypcnt[MAX_OSQL_TYPES];
+    int64_t nsql;  // counter for queries to this table 
     /*prev counters for diff*/
-    unsigned prev_typcnt[MAXTYPCNT + 1];
-    unsigned prev_blocktypcnt[BLOCK_MAXOPCODE];
-    unsigned prev_blockosqltypcnt[MAX_OSQL_TYPES];
-    unsigned prev_nsql;
+    int64_t prev_typcnt[MAXTYPCNT + 1];
+    int64_t prev_blocktypcnt[BLOCK_MAXOPCODE];
+    int64_t prev_blockosqltypcnt[MAX_OSQL_TYPES];
+    int64_t prev_nsql;
     /* counters for writes to this table */
-    unsigned write_count[RECORD_WRITE_MAX];
-    unsigned saved_write_count[RECORD_WRITE_MAX];
+    int64_t write_count[RECORD_WRITE_MAX];
+    int64_t saved_write_count[RECORD_WRITE_MAX];
     /* counters for cascaded writes to this table */
-    unsigned casc_write_count;
-    unsigned saved_casc_write_count;
-    unsigned deadlock_count;
-    unsigned saved_deadlock_count;
-    unsigned aa_saved_counter; // zeroed out at autoanalyze
+    int64_t casc_write_count;
+    int64_t saved_casc_write_count;
+    int64_t deadlock_count;
+    int64_t saved_deadlock_count;
+    int64_t aa_saved_counter; // zeroed out at autoanalyze
     int64_t aa_lastepoch;
-    unsigned aa_counter_upd;   // counter which includes updates
-    unsigned aa_counter_noupd; // does not include updates
     int64_t aa_needs_analyze_time; // time when analyze is needed for table in request mode, otherwise 0
     int64_t read_count; // counter for reads to this table
     int64_t index_used_count;   // counter for number of times a table index was used
@@ -956,10 +955,10 @@ struct dbenv {
     pthread_t watchdog_tid;
     pthread_t watchdog_watcher_tid;
 
-    unsigned txns_committed;
-    unsigned txns_aborted;
-    unsigned prev_txns_committed;
-    unsigned prev_txns_aborted;
+    int64_t txns_committed;
+    int64_t txns_aborted;
+    int64_t prev_txns_committed;
+    int64_t prev_txns_aborted;
     int wait_for_N_nodes;
 
     LISTC_T(struct lrlfile) lrl_files;
@@ -1710,11 +1709,11 @@ extern int gbl_lock_conflict_trace;
 extern int gbl_enque_flush_interval;
 extern int gbl_inflate_log;
 extern pthread_attr_t gbl_pthread_attr_detached;
-extern uint32_t gbl_nsql;
+extern int64_t gbl_nsql;
 extern long long gbl_nsql_steps;
 
-extern unsigned int gbl_nnewsql;
-extern unsigned int gbl_nnewsql_ssl;
+extern int64_t gbl_nnewsql;
+extern int64_t gbl_nnewsql_ssl;
 extern long long gbl_nnewsql_steps;
 
 /* Legacy request metrics */
@@ -3380,8 +3379,10 @@ int get_max_reclen(struct dbenv *);
 
 void testrep(int niter, int recsz);
 int sc_request_disallowed(SBUF2 *sb);
-int dump_spfile(char *path, const char *dblrl, char *file_name);
-int read_spfile(char *file);
+int dump_spfile(const char *file);
+int dump_user_version_spfile(const char *file);
+int read_spfile(const char *file);
+int read_user_version_spfile(const char *file);
 
 struct bdb_cursor_ifn;
 
@@ -3432,7 +3433,8 @@ extern int gbl_max_sql_hint_cache;
 
 /* Remote cursor support */
 /* use portmux to open an SBUF2 to local db or proxied db */
-SBUF2* connect_remote_db(const char *protocol, const char *dbname, const char *service, char *host, int use_cache);
+SBUF2 *connect_remote_db(const char *protocol, const char *dbname, const char *service, char *host, int use_cache,
+                         int force_rte);
 int get_rootpage_numbers(int nums);
 
 void sql_dump_hints(void);

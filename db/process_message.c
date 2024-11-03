@@ -1890,7 +1890,7 @@ clipper_usage:
                               &max_retries);
 
             logmsg(LOGMSG_USER,
-                   "commit %u abort %u repcommit %llu retry %lu "
+                   "commit %"PRId64" abort %"PRId64" repcommit %llu retry %lu "
                    "verify retry %lld rep retry %llu max retry %d\n",
                    dbenv->txns_committed, dbenv->txns_aborted, txns_applied,
                    n_retries, gbl_verify_tran_replays, rep_retry, max_retries);
@@ -1900,9 +1900,9 @@ clipper_usage:
             logmsg(LOGMSG_USER, "uptime                  %ds\n",
                    gbl_epoch_time - gbl_starttime);
             logmsg(LOGMSG_USER, "readonly                %c\n", gbl_readonly ? 'Y' : 'N');
-            logmsg(LOGMSG_USER, "num sql queries         %u\n", gbl_nsql);
-            logmsg(LOGMSG_USER, "num new sql queries     %u\n", gbl_nnewsql);
-            logmsg(LOGMSG_USER, "num ssl sql queries     %u\n", gbl_nnewsql_ssl);
+            logmsg(LOGMSG_USER, "num sql queries         %"PRId64"\n", gbl_nsql);
+            logmsg(LOGMSG_USER, "num new sql queries     %"PRId64"\n", gbl_nnewsql);
+            logmsg(LOGMSG_USER, "num ssl sql queries     %"PRId64"\n", gbl_nnewsql_ssl);
             logmsg(LOGMSG_USER, "num master rejects      %u\n",
                    gbl_masterrejects);
             logmsg(LOGMSG_USER, "sql ticks               %llu\n", gbl_sqltick);
@@ -2162,6 +2162,24 @@ clipper_usage:
             return -1;
     } else if (tokcmp(tok, ltok, "bdbrem") == 0) {
         backend_cmd(dbenv, line, llinesav, stsav);
+    } else if (tokcmp(tok, ltok, "dumpversp") == 0) {
+        char filename[PATH_MAX];
+        tok = segtok(line, lline, &st, &ltok);
+        if (ltok == 0) {
+            logmsg(LOGMSG_ERROR, "dumpversp requires path\n");
+            return -1;
+        }
+        tokcpy(tok, ltok, filename);
+        dump_user_version_spfile(filename);
+    } else if (tokcmp(tok, ltok, "loadversp") == 0) {
+        char filename[PATH_MAX];
+        tok = segtok(line, lline, &st, &ltok);
+        if (ltok == 0) {
+            logmsg(LOGMSG_ERROR, "dumpversp requires path\n");
+            return -1;
+        }
+        tokcpy(tok, ltok, filename);
+        read_user_version_spfile(filename);
     } else if (tokcmp(tok, ltok, "electtime") == 0) {
         int num;
 

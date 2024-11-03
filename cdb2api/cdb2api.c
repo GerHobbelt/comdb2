@@ -73,6 +73,14 @@ static char cdb2_comdb2dbname[32] = "";
 #define QUOTE_(x) #x
 #define QUOTE(x) QUOTE_(x)
 
+#define API_DRIVER_NAME open_cdb2api
+static char api_driver_name[] = QUOTE(API_DRIVER_NAME);
+
+#ifndef API_DRIVER_VERSION
+#define API_DRIVER_VERSION latest
+#endif
+static char api_driver_version[] = QUOTE(API_DRIVER_VERSION);
+
 #ifndef CDB2_DNS_SUFFIX
 #define CDB2_DNS_SUFFIX
 #endif
@@ -3069,6 +3077,8 @@ static int cdb2_send_query(cdb2_hndl_tp *hndl, cdb2_hndl_tp *event_hndl,
         cinfo.th_id = (uint64_t)pthread_self();
         cinfo.host_id = cdb2_hostid();
         cinfo.argv0 = _ARGV0;
+        cinfo.api_driver_name = api_driver_name;
+        cinfo.api_driver_version = api_driver_version;
         if (hndl && hndl->send_stack)
             cinfo.stack = hndl->stack;
         sqlquery.client_info = &cinfo;
@@ -6366,6 +6376,10 @@ static int set_up_ssl_params(cdb2_hndl_tp *hndl)
     return 0;
 }
 
+#ifdef my_ssl_eprintln
+#undef my_ssl_eprintln
+#endif
+
 #define my_ssl_eprintln(fmt, ...)                                              \
     ssl_eprintln("cdb2api", "%s: " fmt, __func__, ##__VA_ARGS__)
 
@@ -7113,39 +7127,40 @@ static int refresh_gbl_events_on_hndl(cdb2_hndl_tp *hndl)
     return 0;
 }
 
-char *cdb2_string_escape(cdb2_hndl_tp *hndl, const char *src){
-    const char escapechar = '\'';
+char *cdb2_string_escape(cdb2_hndl_tp *hndl, const char *src)
+{
+    const char *escapestr = "'";
     size_t count = 2; // set initial value for wrapping characters
-    
-    char *curr = strchr(src, escapechar);
+
+    char *curr = strchr(src, *escapestr);
     while (curr != NULL) {
         ++count;
-        curr = strchr(curr + 1, escapechar);
+        curr = strchr(curr + 1, *escapestr);
     }
 
     size_t len = count + strlen(src) + 1;
     char *out = malloc(len);
     char *dest = out;
-    *dest = escapechar;
+    strcpy(dest, escapestr);
     ++dest;
 
     while (*src) {
-        curr = strchr(src, escapechar);
+        curr = strchr(src, *escapestr);
         if (curr == NULL) {
             strcpy(dest, src);
             dest += strlen(src);
             break;
         }
-    
+
         size_t toklen = curr - src + 1;
         strncpy(dest, src, toklen);
-   
+
         src = curr + 1;
         dest += toklen;
-        *dest = escapechar;
+        strcpy(dest, escapestr);
         ++dest;
     }
-    
-    strcpy(dest, "\'\0");
+
+    strcpy(dest, escapestr);
     return out;
 }

@@ -156,6 +156,7 @@ extern int gbl_all_prepare_leak;
 extern int gbl_flush_on_prepare;
 extern int gbl_abort_on_unset_ha_flag;
 extern int gbl_abort_on_unfound_txn;
+extern int gbl_abort_on_ufid_mismatch;
 extern int gbl_write_dummy_trace;
 extern int gbl_abort_on_incorrect_upgrade;
 extern int gbl_poll_in_pg_free_recover;
@@ -306,6 +307,7 @@ extern uint8_t _non_dedicated_subnet;
 
 extern char *gbl_crypto;
 extern char *gbl_spfile_name;
+extern char *gbl_user_vers_spfile_name;
 extern char *gbl_timepart_file_name;
 extern char *gbl_test_log_file;
 extern pthread_mutex_t gbl_test_log_file_mtx;
@@ -457,6 +459,8 @@ extern int gbl_revsql_debug;
 extern int gbl_revsql_cdb2_debug;
 extern int gbl_revsql_host_refresh_freq_sec;
 extern int gbl_revsql_connect_freq_sec;
+extern int gbl_revsql_force_rte;
+extern int gbl_connect_remote_rte;
 
 int gbl_debug_tmptbl_corrupt_mem;
 int gbl_group_concat_mem_limit; /* 0 implies allow upto SQLITE_MAX_LENGTH,
@@ -499,6 +503,7 @@ extern int gbl_altersc_sampling_sec;
 extern int gbl_altersc_latency_inc;
 extern int gbl_sc_history_max_rows;
 extern int gbl_sc_status_max_rows;
+extern int gbl_rep_process_pstack_time;
 
 /*
   =========================================================

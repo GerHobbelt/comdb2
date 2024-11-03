@@ -286,7 +286,7 @@ static void trimQue(dohsql_connector_t *conn, sqlite3_stmt *stmt,
                    "%p XXX: conn %p %s %p freed older row size %lld limit %d\n",
                    (void *)pthread_self(), conn,
                    que == conn->que ? "que" : "que_free", que, row_size, limit);
-        sqlite3_free(row->packed);
+        free(row->packed);
         free(row);
 
         if (gbl_dohsql_max_queued_kb_highwm) {
@@ -1030,6 +1030,7 @@ static int _shard_connect(struct sqlclntstate *clnt, dohsql_connector_t *conn,
     conn->clnt->origin = clnt->origin;
     conn->clnt->current_user = clnt->current_user;
     conn->clnt->sql = strdup(sql);
+    memcpy(conn->clnt->tzname, clnt->tzname, sizeof(clnt->tzname));
     make_dohsql_plugin(conn->clnt);
     conn->clnt->plugin.state = conn;
     where = thrman_get_where(thrman_self());

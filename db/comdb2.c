@@ -376,11 +376,11 @@ int gbl_init_with_compr = BDB_COMPRESS_CRLE;
 int gbl_init_with_compr_blobs = BDB_COMPRESS_LZ4;
 int gbl_init_with_bthash = 0;
 
-uint32_t gbl_nsql;
+int64_t gbl_nsql;
 long long gbl_nsql_steps;
 
-uint32_t gbl_nnewsql;
-uint32_t gbl_nnewsql_ssl;
+int64_t gbl_nnewsql;
+int64_t gbl_nnewsql_ssl;
 long long gbl_nnewsql_steps;
 
 uint32_t gbl_masterrejects = 0;
@@ -401,6 +401,7 @@ int gbl_allowbrokendatetime = 1;
 int gbl_sort_nulls_correctly = 1;
 int gbl_check_client_tags = 1;
 char *gbl_spfile_name = NULL;
+char *gbl_user_vers_spfile_name = NULL;
 char *gbl_timepart_file_name = NULL;
 int gbl_max_lua_instructions = 10000;
 int gbl_check_wrong_cmd = 1;
@@ -1970,23 +1971,23 @@ size_t gbl_lkr_hash = 16;
 char **sfuncs = NULL;
 char **afuncs = NULL;
 
-#define llmeta_set_lua_funcs(pfx)                                              \
-    do {                                                                       \
-        if (pfx##funcs == NULL)                                                \
-            break;                                                             \
-        char **func = &pfx##funcs[0];                                          \
-        while (*func) {                                                        \
-            int bdberr;                                                        \
-            int rc = bdb_llmeta_add_lua_##pfx##func(*func, NULL, &bdberr);     \
-            if (rc) {                                                          \
-               logmsg(LOGMSG_ERROR, "could not add sql lua " #pfx "func:%s to llmeta\n",\
-                       *func);                                                 \
-                return -1;                                                     \
-            } else {                                                           \
-               logmsg(LOGMSG_INFO, "Added Lua SQL " #pfx "func:%s\n", *func);  \
-            }                                                                  \
-            ++func;                                                            \
-        }                                                                      \
+#define llmeta_set_lua_funcs(pfx)                                                                                      \
+    do {                                                                                                               \
+        if (pfx##funcs == NULL)                                                                                        \
+            break;                                                                                                     \
+        char **func = &pfx##funcs[0];                                                                                  \
+        while (*func) {                                                                                                \
+            int bdberr;                                                                                                \
+            int flags = 0;                                                                                             \
+            int rc = bdb_llmeta_add_lua_##pfx##func(*func, &flags, &bdberr);                                           \
+            if (rc) {                                                                                                  \
+                logmsg(LOGMSG_ERROR, "could not add sql lua " #pfx "func:%s to llmeta\n", *func);                      \
+                return -1;                                                                                             \
+            } else {                                                                                                   \
+                logmsg(LOGMSG_INFO, "Added Lua SQL " #pfx "func:%s\n", *func);                                         \
+            }                                                                                                          \
+            ++func;                                                                                                    \
+        }                                                                                                              \
     } while (0)
 
 #define llmeta_load_lua_funcs(pfx)                                             \
@@ -2966,8 +2967,11 @@ int repopulate_lrl(const char *p_lrl_fname_out)
         p_data->table_nums[i] = thedb->dbs[i]->dbnum;
     }
 
-    int has_sp =
-        dump_spfile(p_data->lrl_fname_out_dir, thedb->envname, SP_FILE_NAME);
+    char file[1024];
+    snprintf(file, sizeof(file), "%s/%s_%s", p_data->lrl_fname_out_dir, thedb->envname, SP_FILE_NAME);
+    int has_sp = dump_spfile(file);
+    snprintf(file, sizeof(file), "%s/%s_%s", p_data->lrl_fname_out_dir, thedb->envname, SP_VERS_FILE_NAME);
+    int has_user_vers_sp = dump_user_version_spfile(file);
 
     if (dump_queuedbs(p_data->lrl_fname_out_dir) != 0) {
         free(p_data);
@@ -2982,10 +2986,9 @@ int repopulate_lrl(const char *p_lrl_fname_out)
     }
 
     /* write out the lrl */
-    if (rewrite_lrl_un_llmeta(getresourcepath("lrl"), p_lrl_fname_out,
-                              p_data->p_table_names, p_data->p_csc2_paths,
-                              p_data->table_nums, thedb->num_dbs,
-                              p_data->lrl_fname_out_dir, has_sp, has_tp)) {
+    if (rewrite_lrl_un_llmeta(getresourcepath("lrl"), p_lrl_fname_out, p_data->p_table_names, p_data->p_csc2_paths,
+                              p_data->table_nums, thedb->num_dbs, p_data->lrl_fname_out_dir, has_sp, has_user_vers_sp,
+                              has_tp)) {
         logmsg(LOGMSG_ERROR, "%s: rewrite_lrl_un_llmeta failed\n", __func__);
 
         free(p_data);
@@ -4258,6 +4261,10 @@ static int init(int argc, char **argv)
             read_spfile(gbl_spfile_name);
         }
 
+        if (gbl_user_vers_spfile_name) {
+            read_user_version_spfile(gbl_user_vers_spfile_name);
+        }
+
         if (gbl_timepart_file_name) {
             if (timepart_apply_file(gbl_timepart_file_name)) {
                 logmsg(LOGMSG_FATAL, "Failed to create time partitions!\n");
@@ -4483,7 +4490,7 @@ double gbl_cpupercent;
 #include <sc_util.h>
 
 
-static inline void log_tbl_item(int curr, unsigned int *prev, const char *(*type_to_str)(int), int type, char *string,
+static inline void log_tbl_item(int64_t curr, int64_t *prev, const char *(*type_to_str)(int), int type, char *string,
                                 int *hdr_p, struct reqlogger *statlogger, dbtable *tbl, int first) 
 {
     int diff = curr - *prev;
@@ -4493,7 +4500,7 @@ static inline void log_tbl_item(int curr, unsigned int *prev, const char *(*type
             reqlog_logf(statlogger, REQL_INFO, hdr_fmt, tbl->tablename);
             *hdr_p = 1;
         }
-        reqlog_logf(statlogger, REQL_INFO, "%s%-22s %u\n", (first ? "" : "    "),
+        reqlog_logf(statlogger, REQL_INFO, "%s%-22s %d\n", (first ? "" : "    "),
                     (type_to_str ? type_to_str(type) : string), diff);
     }
     *prev = curr;
@@ -4504,11 +4511,11 @@ void *statthd(void *p)
     struct dbenv *dbenv;
     int nqtrap;
     int nfstrap;
-    int nsql;
+    int64_t nsql;
     long long nsql_steps;
     int ncommits;
     double ncommit_time;
-    int newsql;
+    int64_t newsql;
     long long newsql_steps;
     int nretries;
     int64_t ndeadlocks = 0;
@@ -4531,11 +4538,11 @@ void *statthd(void *p)
 
     int last_qtrap = 0;
     int last_fstrap = 0;
-    int last_nsql = 0;
+    int64_t last_nsql = 0;
     long long last_nsql_steps = 0;
     int last_ncommits = 0;
     long long last_ncommit_time = 0;
-    int last_newsql = 0;
+    int64_t last_newsql = 0;
     int last_nretries = 0;
     int64_t last_ndeadlocks = 0, last_nlocks_aborted = 0, last_nlockwaits = 0;
     int64_t last_vreplays = 0;
@@ -4543,11 +4550,11 @@ void *statthd(void *p)
     int count = 0;
     int last_report_nqtrap = n_qtrap;
     int last_report_nfstrap = n_fstrap;
-    int last_report_nsql = gbl_nsql;
+    int64_t last_report_nsql = gbl_nsql;
     long long last_report_nsql_steps = gbl_nsql_steps;
     int last_report_ncommits = n_commits;
     long long last_report_ncommit_time = n_commit_time;
-    int last_report_newsql = gbl_nnewsql;
+    int64_t last_report_newsql = gbl_nnewsql;
     long long last_report_newsql_steps = gbl_nnewsql_steps;
     int last_report_nretries = n_retries;
     int64_t last_report_deadlocks = 0;
@@ -4796,9 +4803,9 @@ void *statthd(void *p)
                                  &hdr, statlogger, tbl, 0);
 
                     // log write_count, save in saved_write_count, compute autoanalyze delta
-                    unsigned prev = tbl->saved_write_count[RECORD_WRITE_DEL] +
+                    int64_t prev = tbl->saved_write_count[RECORD_WRITE_DEL] +
                                     tbl->saved_write_count[RECORD_WRITE_INS];
-                    unsigned curr = tbl->write_count[RECORD_WRITE_DEL] +
+                    int64_t curr = tbl->write_count[RECORD_WRITE_DEL] +
                                     tbl->write_count[RECORD_WRITE_INS];
 
                     if (aa_include_updates) {
@@ -4806,7 +4813,7 @@ void *statthd(void *p)
                         curr += tbl->write_count[RECORD_WRITE_UPD];
                     }
 
-                    ATOMIC_ADD32(tbl->aa_saved_counter, (curr - prev));
+                    ATOMIC_ADD64(tbl->aa_saved_counter, (curr - prev));
                     log_tbl_item(tbl->write_count[RECORD_WRITE_INS], &tbl->saved_write_count[RECORD_WRITE_INS],
                                  NULL, 0, "inserted rows", &hdr, statlogger, tbl, 0);
                     log_tbl_item(tbl->write_count[RECORD_WRITE_UPD], &tbl->saved_write_count[RECORD_WRITE_UPD],
