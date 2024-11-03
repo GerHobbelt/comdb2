@@ -968,12 +968,13 @@ struct dbenv {
     uint32_t incoh_file, incoh_offset;
     timepart_views_t *timepart_views;
 
-    struct time_metric* service_time;
-    struct time_metric* queue_depth;
-    struct time_metric* concurrent_queries;
-    struct time_metric* connections;
+    struct time_metric *service_time;
+    struct time_metric *queue_depth;
+    struct time_metric *concurrent_queries;
+    struct time_metric *connections;
     struct time_metric *sql_queue_time;
     struct time_metric *handle_buf_queue_time;
+    struct time_metric *watchdog_time;
     LISTC_T(struct lrl_handler) lrl_handlers;
     LISTC_T(struct message_handler) message_handlers;
 
@@ -1622,21 +1623,11 @@ extern int gbl_abort_on_clear_inuse_rqid;
 extern int gbl_exit_on_pthread_create_fail;
 extern int gbl_exit_on_internal_error;
 
-extern int gbl_osql_blockproc_timeout_sec;
 extern int gbl_osql_max_throttle_sec;
 extern int gbl_throttle_sql_overload_dump_sec;
-extern int gbl_toblock_net_throttle;
 extern int gbl_heartbeat_check;
-extern int gbl_osql_heartbeat_send;
-extern int gbl_osql_heartbeat_alert;
 extern int gbl_osql_bkoff_netsend_lmt;
 extern int gbl_osql_bkoff_netsend;
-extern int gbl_osql_max_queue;
-extern int gbl_net_poll;
-extern int gbl_osql_net_poll;
-extern int gbl_osql_net_portmux_register_interval;
-extern int gbl_net_portmux_register_interval;
-extern int gbl_net_max_queue;
 extern int gbl_nullfkey;
 extern int gbl_prefaulthelper_blockops;
 extern int gbl_prefaulthelper_sqlreadahead;
@@ -1741,7 +1732,6 @@ extern int gbl_sc_report_freq;
 extern int gbl_thrman_trace;
 extern int gbl_move_deadlk_max_attempt;
 extern int gbl_lock_conflict_trace;
-extern int gbl_enque_flush_interval;
 extern int gbl_inflate_log;
 extern pthread_attr_t gbl_pthread_attr_detached;
 extern int64_t gbl_nsql;
@@ -1797,7 +1787,6 @@ extern int gbl_replicate_local_concurrent;
 
 extern int gbl_verify_abort;
 
-extern int gbl_sqlwrtimeoutms;
 extern int gbl_sort_nulls_correctly;
 
 extern int gbl_master_changes;
@@ -1808,7 +1797,6 @@ extern int gbl_warn_validate_cstr;
 
 extern int gbl_pushlogs_after_sc;
 extern int gbl_prefault_verbose;
-extern int gbl_ftables;
 extern int gbl_check_client_tags;
 extern int gbl_strict_dbl_quotes;
 
@@ -1917,7 +1905,6 @@ int thd_init(void);
 void thd_cleanup();
 void sqlinit(void);
 void sqlnet_init(void);
-int clnt_stats_init(void);
 int sqlpool_init(void);
 int schema_init(void);
 int osqlpfthdpool_init(void);
@@ -3313,8 +3300,6 @@ int trans_abort_shadow(void **trans, int *bdberr);
 
 void handle_proxy_lrl_line(char *line);
 int ftable_init(void);
-
-int net_get_my_port(netinfo_type *netinfo_ptr);
 
 extern int gbl_disallow_null_blobs;
 extern int gbl_inplace_blobs;

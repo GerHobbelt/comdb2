@@ -465,13 +465,12 @@ struct plugin_callbacks {
     plugin_func *close; /* newsql_close_evbuffer */
     plugin_func *flush; /* newsql_flush_evbuffer */
     plugin_func *get_fileno; /* newsql_get_fileno_evbuffer */
-    response_func *get_x509_attr; /* newsql_get_x509_attr_sbuf */
-    plugin_func *has_ssl; /* newsql_has_ssl_sbuf */
-    plugin_func *has_x509; /* newsql_has_x509_sbuf */
+    response_func *get_x509_attr; /* newsql_get_x509_attr_evbuffer */
+    plugin_func *has_ssl; /* newsql_has_ssl_evbuffer */
+    plugin_func *has_x509; /* newsql_has_x509_evbuffer */
     plugin_func *local_check; /* newsql_local_check_evbuffer */
     plugin_func *peer_check; /* newsql_peer_check_evbuffer */
     auth_func *get_authdata; /* newsql_get_authdata */
-    override_type_func *set_timeout; /* newsql_set_timeout_sbuf */
     api_type_func *api_type; /* newsql_api_type */
 
     /* Optional */
@@ -538,7 +537,6 @@ struct plugin_callbacks {
         make_plugin_callback(clnt, name, local_check);                         \
         make_plugin_callback(clnt, name, peer_check);                          \
         make_plugin_callback(clnt, name, get_authdata);                        \
-        make_plugin_callback(clnt, name, set_timeout);                         \
         make_plugin_callback(clnt, name, api_type);                            \
         make_plugin_optional_null(clnt, count);                                \
         make_plugin_optional_null(clnt, type);                                 \
@@ -1502,8 +1500,6 @@ void add_query_to_samples_queries(const unsigned char *fingerprint, const unsign
 int gather_connection_info(struct connection_info **info, int *num_connections);
 void free_connection_info(struct connection_info *info, int num_connections);
 void clnt_change_state(struct sqlclntstate *clnt, enum connection_state state);
-void clnt_register(struct sqlclntstate *clnt);
-void clnt_unregister(struct sqlclntstate *clnt);
 
 struct sqlclntstate *get_sql_clnt(void);
 
@@ -1555,9 +1551,7 @@ tran_type *curtran_gettran(void);
 void curtran_assert_nolocks(void);
 
 void curtran_puttran(tran_type *tran);
-int watcher_warning_function(void *, int timeout, int gap);
 int sbuf_is_local(SBUF2 *);
-int sbuf_set_timeout(struct sqlclntstate *, SBUF2 *, int wr_timeout_ms);
 int tdef_to_tranlevel(int tdef);
 int fdb_access_control_create(struct sqlclntstate *, char *str);
 int disable_server_sql_timeouts(void);
@@ -1579,7 +1573,6 @@ void add_sql_evbuffer(struct sqlclntstate *);
 void rem_sql_evbuffer(struct sqlclntstate *);
 int add_appsock_connection_evbuffer(struct sqlclntstate *);
 void rem_appsock_connection_evbuffer(struct sqlclntstate *);
-int check_active_appsock_connections(struct sqlclntstate *);
 void exhausted_appsock_connections(struct sqlclntstate *);
 void update_col_info(struct sql_col_info *info, int);
 void sqlengine_work_appsock(struct sqlthdstate *, struct sqlclntstate *);

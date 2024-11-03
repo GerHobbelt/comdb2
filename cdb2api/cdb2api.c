@@ -251,7 +251,8 @@ void (*cdb2_uninstall)(void) = CDB2_UNINSTALL_LIBS;
 #ifndef CDB2_IDENTITY_CALLBACKS
     struct cdb2_identity *identity_cb = NULL;
 #else
-    struct cdb2_identity *identity_cb = CDB2_IDENTITY_CALLBACKS;
+    extern struct cdb2_identity CDB2_IDENTITY_CALLBACKS;
+    struct cdb2_identity *identity_cb = &CDB2_IDENTITY_CALLBACKS;
 #endif
 
 #ifndef WITH_DL_LIBS
@@ -1662,13 +1663,12 @@ static int read_available_comdb2db_configs(cdb2_hndl_tp *hndl, char comdb2db_hos
     return 0;
 }
 
-int cdb2_get_comdb2db(char **comdb2dbname, char **default_type)
+int cdb2_get_comdb2db(char **comdb2dbname)
 {
     if (!strlen(cdb2_comdb2dbname)) {
         read_available_comdb2db_configs(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0);
     }
     (*comdb2dbname) = strdup(cdb2_comdb2dbname);
-    (*default_type) = strdup(cdb2_default_cluster);
     return 0;
 }
 
@@ -1685,8 +1685,7 @@ static int get_host_by_name(const char *comdb2db_name, char comdb2db_hosts[][CDB
     if (cdb2_default_cluster[0] == '\0') {
         snprintf(dns_name, sizeof(dns_name), "%s.%s", comdb2db_name, cdb2_dnssuffix);
     } else {
-        snprintf(dns_name, sizeof(dns_name), "%s-%s.%s", cdb2_default_cluster, comdb2db_name,
-                 cdb2_dnssuffix);
+        snprintf(dns_name, sizeof(dns_name), "%s-%s.%s", cdb2_default_cluster, comdb2db_name, cdb2_dnssuffix);
     }
 #ifdef __APPLE__
     hp = gethostbyname(dns_name);

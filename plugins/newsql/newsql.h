@@ -60,7 +60,6 @@ void newsql_destroy_clnt(struct sqlclntstate *);
 int process_set_commands(struct sqlclntstate *, CDB2SQLQUERY *);
 void handle_sql_intrans_unrecoverable_error(struct sqlclntstate *);
 int newsql_heartbeat(struct sqlclntstate *);
-void setup_newsql_evbuffer_handlers(void);
 int newsql_first_run(struct sqlclntstate *, CDB2SQLQUERY *);
 typedef enum {
     NEWSQL_SUCCESS = 0,
@@ -87,7 +86,6 @@ void newsql_set_client_info(struct sqlclntstate *, CDB2SQLQUERY *, int initial);
     clnt->plugin.has_x509 = newsql_has_x509##_##name;                          \
     clnt->plugin.local_check = newsql_local_check##_##name;                    \
     clnt->plugin.peer_check = newsql_peer_check##_##name;                      \
-    clnt->plugin.set_timeout = newsql_set_timeout##_##name;                    \
     appdata->ping_pong = newsql_ping_pong##_##name;                            \
     appdata->read = newsql_read##_##name;                                      \
     appdata->write = newsql_write##_##name;                                    \

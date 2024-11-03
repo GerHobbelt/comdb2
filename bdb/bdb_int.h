@@ -1264,7 +1264,7 @@ void delete_log_files(bdb_state_type *bdb_state);
 void delete_log_files_list(bdb_state_type *bdb_state, char **list);
 void delete_log_files_chkpt(bdb_state_type *bdb_state);
 void bdb_checkpoint_list_init();
-int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp);
+int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp, int push_top);
 void bdb_checkpoint_list_get_ckplsn_before_lsn(DB_LSN lsn, DB_LSN *lsnout);
 
 /* rep.c */
@@ -1870,8 +1870,6 @@ char *bdb_coherent_state_string(struct interned_string *);
 
 /* ugly, but need to signal shutdown */
 int osql_process_message_decom(char *);
-void osql_net_exiting(void);
-void osql_cleanup_netinfo(void);
 int osql_repository_cancelall(void);
 int bdb_block_durable(bdb_state_type *bdb_state, DB_LSN *lsn);
 int bdb_committed_durable(bdb_state_type *bdb_state);

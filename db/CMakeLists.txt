@@ -1,4 +1,5 @@
 set(src
+  alias.c
   api_history.c
   appsock_handler.c
   autoanalyze.c
@@ -69,7 +70,6 @@ set(src
   resource.c
   reverse_conn.c
   rmtpolicy.c
-  rowlocks_bench.c
   sigutil.c
   sltdbt.c
   socket_interfaces.c

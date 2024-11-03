@@ -27,6 +27,7 @@
 #include "cdb2_constants.h"
 #include "db_access.h" /* gbl_check_access_controls */
 #include "comdb2_atomic.h"
+#include "alias.h"
 
 #define COMDB2_INVALID_AUTOINCREMENT "invalid datatype for autoincrement"
 
@@ -396,15 +397,14 @@ static int comdb2AuthenticateUserDDL(const char *tablename)
 
      if (gbl_uses_externalauth && externalComdb2AuthenticateUserDDL && !clnt->admin) {
          clnt->authdata = get_authdata(clnt);
-         if (!clnt->authdata) {
-             if (clnt->secure && !gbl_allow_anon_id_for_spmux) {
+
+         if (!clnt->authdata && clnt->secure && !gbl_allow_anon_id_for_spmux) {
                  return reject_anon_id(clnt);
-             }
-             if (gbl_externalauth_warn) {
-                logmsg(LOGMSG_INFO, "Client %s pid:%d mach:%d is missing authentication data\n",
-                       clnt->argv0 ? clnt->argv0 : "???", clnt->conninfo.pid, clnt->conninfo.node);
-             }
-         } else if (externalComdb2AuthenticateUserDDL(clnt->authdata, tablename)) {
+         }
+         if (gbl_externalauth_warn && !clnt->authdata) {
+            logmsg(LOGMSG_INFO, "Client %s pid:%d mach:%d is missing authentication data\n",
+                   clnt->argv0 ? clnt->argv0 : "???", clnt->conninfo.pid, clnt->conninfo.node);
+         }  else if (externalComdb2AuthenticateUserDDL(clnt->authdata, tablename)) {
              ATOMIC_ADD64(gbl_num_auth_denied, 1);
              return SQLITE_AUTH;
          }
@@ -444,16 +444,13 @@ static int comdb2CheckOpAccess(void) {
     struct sqlclntstate *clnt = get_sql_clnt();
     if (gbl_uses_externalauth && externalComdb2CheckOpAccess && !clnt->admin) {
          clnt->authdata = get_authdata(clnt);
-         if (!clnt->authdata) {
-             if (clnt->secure && !gbl_allow_anon_id_for_spmux) {
-                 return reject_anon_id(clnt);
-             }
-             if (gbl_externalauth_warn) {
-                logmsg(LOGMSG_INFO, "Client %s pid:%d mach:%d is missing authentication data\n",
-                       clnt->argv0 ? clnt->argv0 : "???", clnt->conninfo.pid, clnt->conninfo.node);
-                return SQLITE_OK;
-             }
-         } else if (externalComdb2CheckOpAccess(clnt->authdata)) {
+         if (!clnt->authdata && clnt->secure && !gbl_allow_anon_id_for_spmux) {
+             return reject_anon_id(clnt);
+         }
+         if (gbl_externalauth_warn && !clnt->authdata) {
+            logmsg(LOGMSG_INFO, "Client %s pid:%d mach:%d is missing authentication data\n",
+                   clnt->argv0 ? clnt->argv0 : "???", clnt->conninfo.pid, clnt->conninfo.node);
+         }  else if (externalComdb2CheckOpAccess(clnt->authdata)) {
              ATOMIC_ADD64(gbl_num_auth_denied, 1);
              return SQLITE_AUTH;
          }
@@ -1944,6 +1941,43 @@ err:
 
 /********************* ALIAS **************************************************/
 
+static void deleteAlias(char *alias, Parse *pParse)
+{
+
+    int rc = 0;
+    char *err = NULL;
+    rc = llmeta_rem_tablename_alias(alias, &err);
+    
+    if (rc) {
+        setError(pParse, SQLITE_INTERNAL, "Could not delete alias");
+    }
+}
+
+void comdb2DeleteAlias(Parse *pParse, Token *name) {
+    if (comdb2IsPrepareOnly(pParse))
+        return;
+
+#ifndef SQLITE_OMIT_AUTHORIZATION
+    {
+        if( sqlite3AuthCheck(pParse, SQLITE_GET_TUNABLE, 0, 0, 0) ){
+            setError(pParse, SQLITE_AUTH, COMDB2_NOT_AUTHORIZED_ERRMSG);
+            return;
+        }
+    }
+#endif
+
+    if (comdb2AuthenticateUserOp(pParse))
+        return;
+
+    char *alias = (char *)malloc(MAXTABLELEN);
+    if (chkAndCopyTableTokens(pParse, alias, name, 0,
+                              ERROR_ON_TBL_FOUND, 1, 0, NULL)) {
+        free(alias);
+        return;
+    }
+    deleteAlias(alias, pParse);
+}
+
 void comdb2setAlias(Parse* pParse, Token* name, Token* url)
 {
     if (comdb2IsPrepareOnly(pParse))
@@ -1995,9 +2029,19 @@ void comdb2setAlias(Parse* pParse, Token* name, Token* url)
     assert (*url->z == '\'' || *url->z == '\"');
     url->z++;
     url->n -= 2;
-
-    if (create_string_from_token(v, pParse, &alias_f->remote, url))
-        goto clean_arg;
+    if (url->n) {
+        alias_f->op = ALIAS_OP__CREATE;
+        if (create_string_from_token(v, pParse, &alias_f->remote, url))
+            goto clean_arg;
+    } else {
+        char *tablename = get_tablename(alias_f->name);
+        if (tablename==NULL) {
+            setError(pParse, SQLITE_NOTFOUND, "Alias not found");
+            goto clean_arg;
+        }
+        alias_f->remote = strdup(tablename);
+        alias_f->op = ALIAS_OP__DROP;
+    }
 
     comdb2prepareNoRows(v, pParse, 0, arg, &comdb2SendBpfunc, 
                         (vdbeFuncArgFree) &free_bpfunc_arg);
@@ -2005,7 +2049,34 @@ void comdb2setAlias(Parse* pParse, Token* name, Token* url)
     return;
 
 clean_arg:
+    if (alias_f->name) {
+        free(alias_f->name);
+    }
+
+    if (alias_f->remote) {
+        free(alias_f->remote);
+    }
     free_bpfunc_arg(arg);
+}
+
+static int printAliasForTablename(OpFunc *f)
+{
+
+    char  *tablename = (char*) f->arg;
+    char *alias = NULL;
+    alias = get_alias(tablename);
+    
+    if (alias)
+    {
+        opFuncPrintf(f, "%s", alias);
+        f->rc = SQLITE_OK;
+        f->errorMsg = NULL;
+    } else 
+    {
+        f->rc = SQLITE_INTERNAL;
+        f->errorMsg = "Alias not found";
+    }
+    return SQLITE_OK;
 }
 
 void comdb2getAlias(Parse* pParse, Token* t1)
@@ -2025,8 +2096,21 @@ void comdb2getAlias(Parse* pParse, Token* t1)
     if (comdb2AuthenticateUserOp(pParse))
         return;
 
-    setError(pParse, SQLITE_INTERNAL, "Not Implemented");
-    logmsg(LOGMSG_INFO, "Getting alias %.*s", t1->n, t1->z);
+    Vdbe *v  = sqlite3GetVdbe(pParse);
+    const char* colname[] = {"Alias"};
+    const int coltype = OPFUNC_STRING_TYPE;
+    OpFuncSetup stp = {1, colname, &coltype, 256};
+    char *tablename = NULL;
+
+    assert (*t1->z == '\'' || *t1->z == '\"');
+    t1->z++;
+    t1->n -= 2;
+    if (create_string_from_token(v, pParse, &tablename, t1)) {
+        return;
+    } else {
+        comdb2prepareOpFunc(v, pParse, 0, tablename, &printAliasForTablename,
+                            (vdbeFuncArgFree)  &free, &stp);
+    }
 }
 
 /********************* GRANT AUTHORIZAZIONS ************************************/

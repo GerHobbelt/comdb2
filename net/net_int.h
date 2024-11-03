@@ -88,18 +88,6 @@ enum {
 BB_COMPILE_TIME_ASSERT(net_connect_message_type,
                        sizeof(connect_message_type) ==
                            NET_CONNECT_MESSAGE_TYPE_LEN);
-typedef struct write_node_data {
-    int flags;
-    int enque_time;
-    struct write_node_data *next;
-    struct write_node_data *prev;
-    size_t len;
-    /* Must be last thing in struct; payload immediately follows header */
-    union {
-        wire_header_type header;
-        char raw[1];
-    } payload;
-} write_data;
 
 typedef struct seq_node_data {
     struct seq_node_data *next;
@@ -180,88 +168,37 @@ struct event_info;
 struct host_node_tag {
     struct event_info *event_info;
     int fd;
-    SBUF2 *sb;
-
     struct interned_string *host_interned;
     char *host;
     int hostname_len;
     char subnet[HOSTNAME_LEN];
     int port;
     struct host_node_tag *next;
-    int have_connect_thread;
-    int have_reader_thread;
-    int have_writer_thread;
     int decom_flag;
-    pthread_t connect_thread_id;
-    pthread_t reader_thread_id;
-    pthread_t writer_thread_id;
-    arch_tid connect_thread_arch_tid;
-    arch_tid reader_thread_arch_tid;
-    arch_tid writer_thread_arch_tid;
-    write_data *write_head;
-    write_data *write_tail;
     seq_data *wait_list;
-    pthread_mutex_t lock;
-    pthread_mutex_t enquelk;
     pthread_cond_t ack_wakeup;
     pthread_mutex_t wait_mutex;
-    int timestamp;
-    pthread_mutex_t write_lock;
-    pthread_cond_t write_wakeup;
     int got_hello;
-    int running_user_func; /* This is a count of how many are running */
     int closed;
-    int really_closed;
 
-    unsigned enque_count; /* number of items currently
-                             enqueued for writing */
+    unsigned enque_count; /* number of items currently enqueued for writing */
     unsigned peak_enque_count;
     unsigned peak_enque_count_time;
 
     unsigned num_queue_full; /* how often we hit queue full issue */
-    unsigned last_queue_full_time;
 
     unsigned enque_bytes;
     unsigned peak_enque_bytes;
     unsigned peak_enque_bytes_time;
 
-    unsigned dedupe_count;
-
     struct in_addr addr;
-    int distress; /* if this is set, do not report any errors, we know we're
-                    looping trying to get a successful read_message_header
 
-                    used as a counter to see how many times I have created
-                    a failed connect process (connect, reader, writer, ...)
-                  */
-
-    int rej_up_cnt; /* number of connections rejected because the node is
-                       already up */
     watchlist_node_type *watchlist_ptr;
     struct netinfo_struct *netinfo_ptr;
     stats_type stats; /* useful per host */
 
-#ifdef PER_THREAD_MALLOC
-    comdb2ma msp;
-#endif
-
-    void *user_data_buf;
-
     HostInfo udp_info;
-    int num_sends;
-    unsigned long long num_flushes;
-    pthread_mutex_t timestamp_lock; /* no more premature session killing */
 
-    /* Number of waiters. This includes number of throttle waiters and connect
-       thread waiter. A host can't be safely removed unless its nwaiters is 0
-       and its reader or writer has exited. */
-    int nwaiters;
-    pthread_mutex_t waiter_lock;
-    pthread_cond_t waiter_wakeup;
-    int last_queue_dump;
-    int last_print_queue_time;
-    int interval_max_queue_count;
-    int interval_max_queue_bytes;
     void *qstat;
     struct time_metric *metric_queue_size;
 };
@@ -273,12 +210,6 @@ struct sanc_node_tag {
     int timestamp;
     struct sanc_node_tag *next;
 };
-
-typedef struct decom_struct {
-    int node;
-    int timestamp;
-    struct decom_struct *next;
-} decom_type;
 
 typedef struct userfunc_info {
     NETFP *func;
@@ -316,33 +247,18 @@ struct netinfo_struct {
     int accept_on_child;
 
     userfunc_t userfuncs[USER_TYPE_MAX];
-    decom_type *decomhead;
-    pthread_mutex_t stop_thread_callback_lock;
     pthread_rwlock_t lock;
     pthread_mutex_t watchlk;
     pthread_mutex_t sanclk;
-    pthread_t accept_thread_id;
-    pthread_t heartbeat_send_thread_id;
-    pthread_t heartbeat_check_thread_id;
-
-    /* get the archthreads for each */
-    arch_tid accept_thread_arch_tid;
-    arch_tid heartbeat_send_thread_arch_tid;
-    arch_tid heartbeat_check_thread_arch_tid;
 
     int fake;     /* 1 if this is set, then we don't ever send or receieve */
     void *usrptr; /* pointer to user supplied data */
     HOSTDOWNFP *hostdown_rtn; /* user supplied routine called when host
                                  gets disconnected */
     NEWNODEFP *new_node_rtn;
-    pthread_attr_t pthread_attr_detach;
     APPSOCKFP *appsock_rtn;
     APPSOCKFP *admin_appsock_rtn;
-    HELLOFP *hello_rtn;
-    int accept_thread_created;
-    int heartbeat_send_time;
     int heartbeat_check_time;
-    int decom_time;
     char *name;
     stats_type stats;
     NETTHROTTLEFP *throttle_rtn;
@@ -351,47 +267,15 @@ struct netinfo_struct {
     void (*start_thread_callback)(void *);
     void (*stop_thread_callback)(void *);
 
-    int bufsz;
-
     LISTC_T(struct watchlist_node_tag) watchlist;
-
-    /* it proves that the sql offload net has slightly
-       different requirements than replication net
-       (for example, we would like the protocol to correctly
-       report back errors when packets are lost due to queue-full
-       this bit mark the difference
-     */
-    int offload;
-    uint32_t max_queue;
-    uint64_t max_bytes;
-    int exiting;
-    int trace;
-
-    int pool_size;
-
-    int user_data_buf_size;
-    int net_test;
 
     host_node_type *last_used_node_ptr;
     unsigned int last_used_node_hit_cntr;
     unsigned int last_used_node_miss_cntr;
 
-    int netpoll;
-    void *connpool;
-    pthread_mutex_t connlk;
-
-    int enque_flush_interval;
-
-    int throttle_percent;
-    NETCMPFP *netcmp_rtn;
-    int enque_reorder_lookahead;
-    int portmux_register_interval;
-    int portmux_register_time;
     int port_from_lrl;
 
     int use_getservbyname;
-    int hellofd;
-    GETLSNFP *getlsn_rtn;
     QSTATINITFP *qstat_init_rtn;
     QSTATREADERFP *qstat_reader_rtn;
     QSTATENQUEFP *qstat_enque_rtn;
@@ -471,6 +355,12 @@ int net_send_evbuffer(netinfo_type *, const char *, int, void *, int, int, void 
 int get_hosts_evbuffer(int n, host_node_type **);
 
 int should_reject_request(void);
+
+int dist_heartbeats(dist_hbeats_type *);
+
+/* Participant teardown from heartbeat */
+void dist_heartbeat_free_tran(dist_hbeats_type *);
+
 
 #if defined _SUN_SOURCE
 void wait_alive(int fd);

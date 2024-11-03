@@ -121,8 +121,9 @@ extern int gbl_partial_indexes;
 #define SQLITE3BTREE_KEY_SET_DEL(IX) (clnt->del_keys |= (1ULL << (IX)))
 extern int gbl_expressions_indexes;
 extern int gbl_debug_tmptbl_corrupt_mem;
-extern int gbl_commit_lsn_map;
 extern int gbl_utxnid_log;
+
+extern int get_commit_lsn_map_switch_value();
 
 // Lua threads share temp tables.
 // Don't create new btree, use this one (tmptbl_clone)
@@ -3709,7 +3710,7 @@ int sql_set_transaction_mode(sqlite3 *db, struct sqlclntstate *clnt, int mode)
     int i;
 
     /* snapshot/serializable protection */
-    if ((mode == TRANLEVEL_MODSNAP && (!gbl_snapisol || !gbl_commit_lsn_map || !gbl_utxnid_log)) || 
+    if ((mode == TRANLEVEL_MODSNAP && (!gbl_snapisol || !get_commit_lsn_map_switch_value() || !gbl_utxnid_log)) || 
         ((mode == TRANLEVEL_SERIAL || mode == TRANLEVEL_SNAPISOL) &&
         !(gbl_rowlocks || gbl_snapisol))) {
         logmsg(LOGMSG_ERROR, "%s REQUIRES MODIFICATIONS TO THE LRL FILE\n",
@@ -9129,20 +9130,22 @@ int sqlite3BtreeInsert(
             int rec_flags = 0;
             if (flags != 0) {
                 /* Set the UPSERT related flags. */
-                if (flags & OPFLAG_IGNORE_FAILURE) {
-                    /* For ON CONFLICT(opt-target-index) DO NOTHING, the lower
-                     * 8 bits of the rec_flags store the OSQL_IGNORE_FAILURE
-                     * (signifying DO NOTHING), and higher bits store the index
-                     * number specified in the ON CONFLICT target. Use of no
-                     * target implies the implicit inclusion of all unique
-                     * indexes. This is represented by storing MAXINDEX+1 in
-                     * the higher bits instead.
-                     */
-                    rec_flags = ((comdb2UpsertIdx(pCur->vdbe) << 8) |
-                                 OSQL_IGNORE_FAILURE);
-                }
-                if (flags & OPFLAG_FORCE_VERIFY) {
-                    rec_flags |= OSQL_FORCE_VERIFY;
+                if (flags & (OPFLAG_IGNORE_FAILURE | OPFLAG_FORCE_VERIFY)) {
+                    rec_flags = comdb2UpsertIdx(pCur->vdbe) << 8;
+                    if (flags & OPFLAG_IGNORE_FAILURE) {
+                        /* For ON CONFLICT(opt-target-index) DO NOTHING, the lower
+                         * 8 bits of the rec_flags store the OSQL_IGNORE_FAILURE
+                         * (signifying DO NOTHING), and higher bits store the index
+                         * number specified in the ON CONFLICT target. Use of no
+                         * target implies the implicit inclusion of all unique
+                         * indexes. This is represented by storing MAXINDEX+1 in
+                         * the higher bits instead.
+                         */
+                        rec_flags |= OSQL_IGNORE_FAILURE;
+                    }
+                    if (flags & OPFLAG_FORCE_VERIFY) {
+                        rec_flags |= OSQL_FORCE_VERIFY;
+                    }
                 }
             }
 

@@ -101,12 +101,11 @@ int send_reversesql_request(const char *dbname, const char *host,
         return 1;
     }
 
-    netinfo_type *netinfo_ptr = thedb->bdb_env->repinfo->netinfo;
     new_fd = sbuf2fileno(sb);
 
     // NC: Most of the following code has been copied from net/net.c (accept_thread())
 
-    if (netinfo_ptr->exiting || db_is_exiting()) {
+    if (db_is_exiting()) {
         if (gbl_revsql_debug == 1) {
             revconn_logmsg(LOGMSG_USER, "%s:%d Comdb2 is exiting\n", __func__, __LINE__);
         }
@@ -176,8 +175,6 @@ int send_reversesql_request(const char *dbname, const char *host,
     }
 #endif
 
-    sbuf2setbufsize(sb, netinfo_ptr->bufsz);
-
     char msg[120] = {0};
     snprintf(msg, sizeof(msg), "reversesql\n%s\n%s\n%s\n",
              gbl_dbname, gbl_myhostname, command);
@@ -190,11 +187,6 @@ int send_reversesql_request(const char *dbname, const char *host,
 
     /* reasonable default for poll */
     polltm = 100;
-
-    /* use tuned value if set */
-    if (netinfo_ptr->netpoll > 0) {
-        polltm = netinfo_ptr->netpoll;
-    }
 
     /* setup poll */
     pol.fd = new_fd;
@@ -230,47 +222,21 @@ int send_reversesql_request(const char *dbname, const char *host,
     cliaddr.sin_addr.s_addr = 0;
 
     /* the above poll ensures that this will not block */
-
-    if (gbl_libevent == 1) {
-
-        struct evbuffer *buf = evbuffer_new();
-
-        rc = evbuffer_read(buf, new_fd, -1);
-        if (rc <= 0) {
-            if (gbl_revsql_debug == 1) {
-                revconn_logmsg(LOGMSG_ERROR, "%s:%d Either remote host ignored the 'reversesql' request or an error has occurred (rc: %d)\n", __func__, __LINE__, rc);
-            }
-            evbuffer_free(buf);
-            sbuf2close(sb);
-            return 0;
-        }
-
-        sbuf2free(sb);
+    struct evbuffer *buf = evbuffer_new();
+    rc = evbuffer_read(buf, new_fd, -1);
+    if (rc <= 0) {
         if (gbl_revsql_debug == 1) {
-            revconn_logmsg(LOGMSG_USER, "%s:%d Received 'newsql' request over 'reversesql' connection\n", __func__, __LINE__);
+            revconn_logmsg(LOGMSG_ERROR, "%s:%d Either remote host ignored the 'reversesql' request or an error has occurred (rc: %d)\n", __func__, __LINE__, rc);
         }
-        (void)do_appsock_evbuffer(buf, &cliaddr, new_fd, 1, 0);
-
-    } else {
-        uint8_t firstbyte;
-        rc = read_stream(netinfo_ptr, NULL, sb, &firstbyte, 1);
-        if (rc != 1) {
-            if (errno != 0) {
-                findpeer(new_fd, paddr, sizeof(paddr));
-                revconn_logmsg(LOGMSG_ERROR, "%s: Readstream failed for = %s (errno: %d)\n", __func__, paddr, errno);
-                rc = -1;
-            } else {
-                rc = 0;
-            }
-            goto cleanup;
-        }
-        sbuf2setisreadonly(sb);
-
-        /* appsock reqs have a non-0 first byte */
-        assert(firstbyte > 0);
-        do_appsock(netinfo_ptr, &cliaddr, sb, firstbyte);
+        evbuffer_free(buf);
+        sbuf2close(sb);
+        return 0;
     }
-
+    sbuf2free(sb);
+    if (gbl_revsql_debug == 1) {
+        revconn_logmsg(LOGMSG_USER, "%s:%d Received 'newsql' request over 'reversesql' connection\n", __func__, __LINE__);
+    }
+    (void)do_appsock_evbuffer(buf, &cliaddr, new_fd, 1, 0);
     return rc;
 
 cleanup:

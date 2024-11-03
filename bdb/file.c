@@ -118,9 +118,10 @@ extern char *gbl_myhostname;
 extern struct interned_string *gbl_myhostname_interned;
 extern size_t gbl_blobmem_cap;
 extern int gbl_backup_logfiles;
-extern int gbl_commit_lsn_map;
 struct timeval last_timer_pstack;
 extern int gbl_modsnap_asof;
+
+extern int get_commit_lsn_map_switch_value();
 
 #define FILENAMELEN 100
 
@@ -191,7 +192,7 @@ void bdb_checkpoint_list_init()
     ckp_lst_ready = 1;
 }
 
-int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp)
+int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp, int push_top)
 {
     struct checkpoint_list *ckp = NULL;
     if (!ckp_lst_ready)
@@ -203,7 +204,11 @@ int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp)
     ckp->ckp_lsn = ckp_lsn;
     ckp->timestamp = timestamp;
     Pthread_mutex_lock(&ckp_lst_mtx);
-    listc_abl(&ckp_lst, ckp);
+    if (push_top) {
+        listc_atl(&ckp_lst, ckp);
+    } else {
+        listc_abl(&ckp_lst, ckp);
+    }
     Pthread_mutex_unlock(&ckp_lst_mtx);
 
     return 0;
@@ -1371,10 +1376,6 @@ char *bdb_trans(const char infile[], char outfile[])
 
 int net_hostdown_rtn(netinfo_type *netinfo_ptr, struct interned_string *host);
 int net_newnode_rtn(netinfo_type *netinfo_ptr, struct interned_string *hostname, int portnum);
-int net_cmplsn_rtn(netinfo_type *netinfo_ptr, void *x, int xlen, void *y,
-                   int ylen);
-int net_getlsn_rtn(netinfo_type *netinfo_ptr, void *record, int len, int *file,
-                   int *offset);
 
 static void net_startthread_rtn(void *arg)
 {
@@ -1646,19 +1647,8 @@ void bdb_prepare_close(bdb_state_type *bdb_state)
 
     if (is_real_netinfo(netinfo_ptr)) {
         /* get me off the network */
-        if (gbl_libevent) {
-            stop_event_net();
-        } else {
-            net_send_decom_all(netinfo_ptr, gbl_myhostname);
-            osql_process_message_decom(gbl_myhostname);
-            sleep(2);
-            net_exiting(netinfo_ptr);
-            osql_net_exiting();
-        }
+        stop_event_net();
     }
-
-    net_cleanup_netinfo(netinfo_ptr);
-    osql_cleanup_netinfo();
 }
 
 /* this routine is only used to CLOSE THE WHOLE DB (env) */
@@ -2301,20 +2291,6 @@ static void panic_func(DB_ENV *dbenv, int errval)
     abort();
 }
 
-static void net_hello_rtn(struct netinfo_struct *netinfo, char name[])
-{
-    bdb_state_type *bdb_state;
-
-    bdb_state = net_get_usrptr(netinfo);
-
-    logmsg(LOGMSG_DEBUG, "net_hello_rtn got hello from <%s>\n", name);
-
-    if (strcmp(bdb_state->name, name) != 0) {
-        logmsg(LOGMSG_FATAL, "crossed clusters!  hello from <%s>\n", name);
-        exit(1);
-    }
-}
-
 static void set_dbenv_stuff(DB_ENV *dbenv, bdb_state_type *bdb_state)
 {
     int rc;
@@ -2360,13 +2336,6 @@ static void set_dbenv_stuff(DB_ENV *dbenv, bdb_state_type *bdb_state)
 void create_udpbackup_analyze_thread(bdb_state_type *bdb_state)
 {
     if (gbl_exit) return;
-#   if 0
-    if (gbl_libevent) {
-        add_timer_event(udp_backup, bdb_state, 500);
-        add_timer_event(auto_analyze, bdb_state, bdb_state->attr->chk_aa_time * 1000);
-        return;
-    }
-#   endif
     pthread_t thread_id;
     pthread_attr_t thd_attr;
     logmsg(LOGMSG_INFO, "starting udpbackup_and_autoanalyze_thd thread\n");
@@ -2676,12 +2645,6 @@ static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
     logmsg(LOGMSG_INFO, "registering <%s> with net code\n", bdb_state->name);
     net_register_name(bdb_state->repinfo->netinfo, bdb_state->name);
 
-    /* register our routine that net will call when it gets a hello
-       msg with the name that was registered by the node that generated
-       the hello msg.  if its a different name, we have crossed clusters.
-       panic and exit */
-    net_register_hello(bdb_state->repinfo->netinfo, net_hello_rtn);
-
     /* register the routine that will delivered data from the
        network to berkeley db */
     net_register_handler(bdb_state->repinfo->netinfo, USER_TYPE_BERKDB_REP,
@@ -2812,12 +2775,6 @@ static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
        starts that might call into bdb lib */
     net_register_stop_thread_callback(bdb_state->repinfo->netinfo,
                                       net_stopthread_rtn);
-
-    /* register a routine which will re-order the out-queue to
-       be in lsn order */
-    net_register_netcmp(bdb_state->repinfo->netinfo, net_cmplsn_rtn);
-
-    net_register_getlsn(bdb_state->repinfo->netinfo, net_getlsn_rtn);
 
     /* Register logput throttle function */
     net_rep_throttle_init(bdb_state->repinfo->netinfo);
@@ -3597,7 +3554,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
     int filenum;
     int delete_adjacent;
     int ctrace_info = 0;
-    int commit_lsn_map = gbl_commit_lsn_map;
+    int commit_lsn_map = get_commit_lsn_map_switch_value();
 
     filenums_str[0] = 0;
 
@@ -4515,6 +4472,17 @@ deadlock_again:
             } else {
                 pagesize = bdb_state->attr->pagesizedta;
             }
+
+            extern int gbl_physrep_ignore_queues;
+            if (gbl_is_physical_replicant && gbl_physrep_ignore_queues) {
+                char new[PATH_MAX];
+                print(bdb_state, "truncating ignored queuedb %s\n", bdb_trans(tmpname, new));
+                rc = truncate(bdb_trans(tmpname, new), pagesize * 2);
+                if (rc != 0) {
+                    logmsg(LOGMSG_ERROR, "truncate %s error %d\n", bdb_trans(tmpname, new), errno);
+                }
+            }
+
             rc = dbp->set_pagesize(dbp, pagesize);
             if (rc != 0) {
                 logmsg(LOGMSG_ERROR, "unable to set pagesize on qdb to %d\n",

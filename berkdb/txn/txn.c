@@ -93,7 +93,7 @@ void ctrace(char *format, ...);
 int __txn_commit_map_add_nolock(DB_ENV *, u_int64_t, DB_LSN);
 
 extern int gbl_is_physical_replicant;
-extern int gbl_commit_lsn_map;
+extern int get_commit_lsn_map_switch_value();
 
 #else
 
@@ -1070,7 +1070,7 @@ __txn_commit_int(txnp, flags, ltranid, llid, last_commit_lsn, rlocks, inlks,
 	int ret, t_ret, elect_highest_committed_gen, commit_lsn_map;
 
 	dbenv = txnp->mgrp->dbenv;
-	commit_lsn_map = gbl_commit_lsn_map;
+	commit_lsn_map = get_commit_lsn_map_switch_value();
 
 	PANIC_CHECK(dbenv);
 
@@ -2804,7 +2804,7 @@ void collect_txnids(DB_ENV *dbenv, u_int32_t *txnarray, int max, int *count)
 	(*count) = idx;
 }
 
-int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp);
+int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp, int push_top);
 
 /* Configure txn_checkpoint() to sleep this much time before memp_sync() */
 int gbl_ckp_sleep_before_sync = 0;
@@ -3080,7 +3080,7 @@ do_ckp:
 		}
 		Pthread_mutex_unlock(&dbenv->mintruncate_lk);
 
-		ret = bdb_checkpoint_list_push(ckp_lsn, ckp_lsn_sav, timestamp);
+		ret = bdb_checkpoint_list_push(ckp_lsn, ckp_lsn_sav, timestamp, 0);
 		if (ret) {
 			logmsg(LOGMSG_ERROR, 
 				"%s: failed to push to checkpoint list, ret %d\n",

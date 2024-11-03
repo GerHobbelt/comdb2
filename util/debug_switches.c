@@ -56,7 +56,6 @@ static struct debug_switches {
     int simulate_find_deadlock_retry;
     int verbose_sbuf;
     int disable_connection_refresh;
-    int offload_check_hostname;
     int skip_duplicate_seqnums;
     int allow_key_typechange;
     int check_for_hung_checkpoint_thread;
@@ -89,6 +88,7 @@ static struct debug_switches {
     int rep_rec_is_delayed;
     int get_tmp_dir_sleep;
     int ignore_null_auth_func;
+    int load_cache_delay;
 } debug_switches;
 
 int init_debug_switches(void)
@@ -124,7 +124,6 @@ int init_debug_switches(void)
     debug_switches.simulate_find_deadlock_retry = 0;
     debug_switches.verbose_sbuf = 1;
     debug_switches.disable_connection_refresh = 0;
-    debug_switches.offload_check_hostname = 0;
     debug_switches.skip_duplicate_seqnums = 1;
     debug_switches.allow_key_typechange = 0;
     debug_switches.check_for_hung_checkpoint_thread = 0;
@@ -217,8 +216,6 @@ int init_debug_switches(void)
     register_int_switch("disable_connection_refresh",
                         "disable_connection_refresh",
                         &debug_switches.disable_connection_refresh);
-    register_int_switch("offload_check_hostname", "offload_check_hostname",
-                        &debug_switches.offload_check_hostname);
     register_int_switch("skip_duplicate_seqnums", "skip_duplicate_seqnums",
                         &debug_switches.skip_duplicate_seqnums);
     register_int_switch("allow_key_typechange", "allow_key_typechange",
@@ -274,6 +271,7 @@ int init_debug_switches(void)
     register_debug_switch("test_trigger_deadlock", &debug_switches.test_trigger_deadlock);
     register_debug_switch("get_tmp_dir_sleep", &debug_switches.get_tmp_dir_sleep);
     register_debug_switch("ignore_null_auth_func", &debug_switches.ignore_null_auth_func);
+    register_debug_switch("load_cache_delay", &debug_switches.load_cache_delay);
     return 0;
 }
 
@@ -400,10 +398,6 @@ int debug_switch_verbose_sbuf(void)
 int debug_switch_disable_connection_refresh(void)
 {
     return debug_switches.disable_connection_refresh;
-}
-int debug_switch_offload_check_hostname(void)
-{
-    return debug_switches.offload_check_hostname;
 }
 int debug_switch_skip_duplicate_seqnums(void)
 {
@@ -551,4 +545,8 @@ void debug_switch_set_tmp_dir_sleep(int val)
 int debug_switch_ignore_null_auth_func(void)
 {
     return debug_switches.ignore_null_auth_func;
+}
+int debug_switch_load_cache_delay(void)
+{
+    return debug_switches.load_cache_delay;
 }

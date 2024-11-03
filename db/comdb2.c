@@ -142,7 +142,7 @@ void berk_memp_sync_alarm_ms(int);
 #include <net_appsock.h>
 #include "sc_csc2.h"
 #include "reverse_conn.h"
-
+#include "alias.h"
 #define tokdup strndup
 
 int gbl_thedb_stopped = 0;
@@ -193,6 +193,7 @@ extern void comdb2_signal_timer();
 void init_lua_dbtypes(void);
 static int put_all_csc2();
 
+static void get_savdir(char *savdir, size_t sz_savdir);
 static void *purge_old_blkseq_thread(void *arg);
 static void *purge_old_files_thread(void *arg);
 static int lrllinecmp(char *lrlline, char *cmpto);
@@ -210,8 +211,6 @@ const char gbl_db_semver[] = QUOTE(COMDB2_SEMVER);
 const char gbl_db_codename[] = QUOTE(COMDB2_CODENAME);
 const char gbl_db_buildtype[] = QUOTE(COMDB2_BUILD_TYPE);
 
-int gbl_enque_flush_interval;
-int gbl_enque_reorder_lookahead = 20;
 int gbl_morecolumns = 0;
 int gbl_return_long_column_names = 1;
 int gbl_maxreclen;
@@ -243,18 +242,8 @@ pthread_t gbl_invalid_tid; /* set this to our main threads tid */
 /* lots of defaults. */
 int gbl_exit_on_pthread_create_fail = 1;
 int gbl_exit_on_internal_error = 1;
-int gbl_osql_blockproc_timeout_sec = 5;  /* wait for 5 seconds for a blocproc*/
-int gbl_osql_max_throttle_sec = 60 * 10; /* 10-minute default */
 int gbl_osql_bkoff_netsend_lmt = 5 * 60 * 1000; /* 5 mins */
 int gbl_osql_bkoff_netsend = 100;               /* wait 100 msec */
-int gbl_net_max_queue = 25000;
-int gbl_net_max_mem = 0;
-int gbl_net_poll = 100;
-int gbl_net_throttle_percent = 50;
-int gbl_osql_net_poll = 100;
-int gbl_osql_max_queue = 10000;
-int gbl_osql_net_portmux_register_interval = 600;
-int gbl_net_portmux_register_interval = 600;
 int gbl_serialise_sqlite3_open = 0;
 
 int gbl_notimeouts = 0; /* set this if you don't need the server timeouts
@@ -264,9 +253,6 @@ int gbl_notimeouts = 0; /* set this if you don't need the server timeouts
 const char *gbl_database_extensions[] = {".dta", ".index", ".datas*", ".blobs*", "" /* sentinal */};
 
 int gbl_nullfkey = 1;
-
-/* Default fast sql timeouts */
-int gbl_sqlwrtimeoutms = 10000;
 
 long long gbl_converted_blocksql_requests = 0;
 
@@ -332,7 +318,6 @@ int gbl_maxblobretries =
     0; /* everyone assures me this can't happen unless the data is corrupt */
 int gbl_maxcontextskips = 10000; /* that's a whole whale of a lotta retries */
 int gbl_decom = 0;
-int gbl_netbufsz = 1 * 1024 * 1024;
 int gbl_loghist = 0;
 int gbl_loghist_verbose = 0;
 int gbl_repdebug = -1;
@@ -407,8 +392,6 @@ char *gbl_timepart_file_name = NULL;
 int gbl_max_lua_instructions = 10000;
 int gbl_check_wrong_cmd = 1;
 int gbl_updategenids = 0;
-int gbl_osql_heartbeat_send = 5;
-int gbl_osql_heartbeat_alert = 7;
 int gbl_chkpoint_alarm_time = 60;
 int gbl_incoherent_msg_freq = 60 * 60;  /* one hour between messages */
 int gbl_incoherent_alarm_time = 2 * 60; /* alarm if we are incoherent for
@@ -461,6 +444,7 @@ int gbl_enable_cache_internal_nodes = 1;
 int gbl_use_modsnap_for_snapshot = 0;
 int gbl_modsnap_asof = 0;
 const snap_impl_enum gbl_snap_fallback_impl = SNAP_IMPL_MODSNAP;
+const snap_impl_enum gbl_snap_backup_fallback_impl = SNAP_IMPL_MODSNAP;
 snap_impl_enum gbl_snap_impl = SNAP_IMPL_MODSNAP;
 int gbl_use_appsock_as_sqlthread = 0;
 int gbl_rep_process_txn_time = 0;
@@ -478,11 +462,8 @@ int gbl_test_blob_race = 0;
 int gbl_skip_ratio_trace = 0;
 
 int gbl_throttle_sql_overload_dump_sec = 5;
-int gbl_toblock_net_throttle = 0;
 
 int gbl_temptable_pool_capacity = 8192;
-
-int gbl_ftables = 0;
 
 /* cdb2 features */
 int gbl_disable_skip_rows = 0;
@@ -562,7 +543,6 @@ struct quantize *q_sql_steps_min;
 struct quantize *q_sql_steps_hour;
 struct quantize *q_sql_steps_all;
 
-extern int gbl_net_lmt_upd_incoherent_nodes;
 extern int gbl_skip_cget_in_db_put;
 
 int gbl_argc;
@@ -595,6 +575,8 @@ extern int bdb_osql_log_repo_init(int *bdberr);
 extern void set_stop_mempsync_thread();
 extern void bdb_prepare_close(bdb_state_type *bdb_state);
 extern void bdb_stop_recover_threads(bdb_state_type *bdb_state);
+
+extern int get_commit_lsn_map_switch_value();
 
 int gbl_use_plan = 1;
 
@@ -1419,6 +1401,22 @@ static int clear_csc2_files(void)
 
 /* gets called single threaded from init() during startup to initialize.
    subsequent calls are thread-safe. */
+char *comdb2_get_sav_dir(void)
+{
+    static char path[PATH_MAX];
+    static int once = 0;
+
+    if (!once) {
+        bzero(path, sizeof(path));
+        get_savdir(path, sizeof(path));
+        once = 1;
+    }
+
+    return path;
+}
+
+/* gets called single threaded from init() during startup to initialize.
+   subsequent calls are thread-safe. */
 char *comdb2_get_tmp_dir(void)
 {
     static char path[PATH_MAX];
@@ -1461,6 +1459,15 @@ char *comdb2_get_tmp_dir(void)
 
 char *comdb2_get_tmp_dir_name(void) {
     char *full_path = comdb2_get_tmp_dir();
+
+    char *last_slash_pos = strrchr(full_path, '/');
+    assert(last_slash_pos != NULL);
+
+    return ++last_slash_pos;
+}
+
+char *comdb2_get_sav_dir_name(void) {
+    char *full_path = comdb2_get_sav_dir();
 
     char *last_slash_pos = strrchr(full_path, '/');
     assert(last_slash_pos != NULL);
@@ -2768,6 +2775,7 @@ struct dbenv *newdbenv(char *dbname, char *lrlname)
     dbenv->queue_depth = time_metric_new("queue_depth");
     dbenv->concurrent_queries = time_metric_new("concurrent_queries");
     dbenv->connections = time_metric_new("connections");
+    dbenv->watchdog_time = time_metric_new("watchdog_time");
 
     return dbenv;
 }
@@ -3599,10 +3607,6 @@ static int init(int argc, char **argv)
         logmsg(LOGMSG_FATAL, "failed to initialise sql module\n");
         return -1;
     }
-    if (clnt_stats_init()) {
-        logmsg(LOGMSG_FATAL, "failed to initialise connection tracking module\n");
-        return -1;
-    }
     if (udppfault_thdpool_init()) {
         logmsg(LOGMSG_FATAL, "failed to initialise udp prefault module\n");
         return -1;
@@ -3941,6 +3945,8 @@ static int init(int argc, char **argv)
         clear_queue_extents();
     }
 
+    comdb2_get_sav_dir();
+
     rc = clear_temp_tables();
     if (rc)
         logmsg(LOGMSG_INFO, "Cleared temporary tables rc=%d\n", rc);
@@ -4125,6 +4131,7 @@ static int init(int argc, char **argv)
             return -1;
         }
 
+        load_aliases_from_llmeta();
         /* if we are repopulating the .lrl with the table definitions */
         if (gbl_repoplrl_fname) {
             /* print all the schemas to disk ie /data/dir/tablename.csc2 */
@@ -4342,32 +4349,6 @@ static int init(int argc, char **argv)
     if (getenv("CDB2_SHOW_DBENV")) {
         showdbenv(thedb);
     }
-
-    if (gbl_net_max_queue) {
-        net_set_max_queue(thedb->handle_sibling, gbl_net_max_queue);
-    }
-    if (gbl_net_max_mem) {
-        uint64_t bytes;
-        bytes = 1024 * 1024 * gbl_net_max_mem;
-        net_set_max_bytes(thedb->handle_sibling, bytes);
-    }
-    if (gbl_net_throttle_percent) {
-        net_set_throttle_percent(thedb->handle_sibling, gbl_net_throttle_percent);
-    }
-    if (gbl_net_portmux_register_interval) {
-        net_set_portmux_register_interval(thedb->handle_sibling, gbl_net_portmux_register_interval);
-    }
-    if (gbl_enque_flush_interval) {
-        net_set_enque_flush_interval(thedb->handle_sibling, gbl_enque_flush_interval);
-    }
-    if (gbl_enque_reorder_lookahead) {
-        net_set_enque_reorder_lookahead(thedb->handle_sibling, gbl_enque_reorder_lookahead);
-    }
-    if (gbl_net_poll) {
-        net_set_poll(thedb->handle_sibling, gbl_net_poll);
-    }
-
-    net_setbufsz(thedb->handle_sibling, gbl_netbufsz);
 
     if (javasp_init_procedures() != 0) {
         logmsg(LOGMSG_FATAL, "*ERROR* cannot initialise Java stored procedures\n");
@@ -4971,6 +4952,7 @@ void *statthd(void *p)
         time_metric_purge_old(thedb->queue_depth);
         time_metric_purge_old(thedb->concurrent_queries);
         time_metric_purge_old(thedb->connections);
+        time_metric_purge_old(thedb->watchdog_time);
 
         ++count;
         sleep(1);
@@ -6175,7 +6157,7 @@ int thdpool_alarm_on_queing(int len)
 
 int comdb2_recovery_cleanup(void *dbenv, void *inlsn, int is_master)
 {
-    int commit_lsn_map = gbl_commit_lsn_map;
+    int commit_lsn_map = get_commit_lsn_map_switch_value();
     int *file = &(((int *)(inlsn))[0]);
     int *offset = &(((int *)(inlsn))[1]);
     int rc;

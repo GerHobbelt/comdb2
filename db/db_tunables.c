@@ -91,7 +91,6 @@ extern int gbl_debug_disttxn_trace;
 extern int gbl_sparse_lockerid_map;
 extern int gbl_spstrictassignments;
 extern int gbl_early;
-extern int gbl_enque_reorder_lookahead;
 extern int gbl_exit_alarm_sec;
 extern int gbl_fdb_track;
 extern int gbl_fdb_track_hints;
@@ -116,10 +115,6 @@ extern int gbl_max_lua_instructions;
 extern int gbl_max_sqlcache;
 extern int __gbl_max_mpalloc_sleeptime;
 extern int gbl_mem_nice;
-extern int gbl_netbufsz;
-extern int gbl_net_lmt_upd_incoherent_nodes;
-extern int gbl_net_max_mem;
-extern int gbl_net_throttle_percent;
 extern int gbl_notimeouts;
 extern int gbl_watchdog_disable_at_start;
 extern int gbl_osql_verify_retries_max;
@@ -208,7 +203,6 @@ extern int gbl_processor_thd_poll;
 extern int gbl_time_rep_apply;
 extern int gbl_incoherent_logput_window;
 extern int gbl_dump_net_queue_on_partial_write;
-extern int gbl_dump_full_net_queue;
 extern int gbl_debug_partial_write;
 extern int gbl_debug_sleep_on_verify;
 extern int gbl_max_clientstats_cache;
@@ -218,7 +212,6 @@ extern int gbl_apply_queue_memory;
 extern int gbl_inmem_repdb;
 extern int gbl_inmem_repdb_maxlog;
 extern int gbl_inmem_repdb_memory;
-extern int gbl_net_writer_thread_poll_ms;
 extern int gbl_max_apply_dequeue;
 extern int gbl_catchup_window_trace;
 extern int gbl_early_ack_trace;
@@ -256,7 +249,6 @@ extern int gbl_simulate_dropping_request;
 extern int gbl_max_logput_queue;
 extern int gbl_blocking_enque;
 extern int gbl_master_req_waitms;
-extern int gbl_print_net_queue_size;
 extern int gbl_commit_delay_trace;
 extern int gbl_elect_priority_bias;
 extern int gbl_abort_on_reconstruct_failure;
@@ -281,7 +273,6 @@ extern int gbl_instrument_dblist;
 extern int gbl_replicated_truncate_timeout;
 extern int gbl_match_on_ckp;
 extern int gbl_verbose_set_sc_in_progress;
-extern int gbl_send_failed_dispatch_message;
 extern int gbl_logdelete_lock_trace;
 extern int gbl_flush_log_at_checkpoint;
 extern int gbl_online_recovery;
@@ -444,7 +435,6 @@ extern int gbl_debug_sleep_in_sql_tick;
 extern int gbl_debug_sleep_in_analyze;
 extern int gbl_debug_sleep_in_summarize;
 extern int gbl_debug_sleep_in_trigger_info;
-extern int gbl_protobuf_prealloc_buffer_size;
 extern int gbl_replicant_retry_on_not_durable;
 extern int gbl_enable_internal_sql_stmt_caching;
 extern int gbl_longreq_log_freq_sec;
@@ -1016,16 +1006,6 @@ static int update_clean_exit_on_sigterm(void *context, void *value) {
     return 0;
 }
 
-static int osql_heartbeat_alert_time_verify(void *context, void *value)
-{
-    if ((*(int *)value <= 0) || (*(int *)value > gbl_osql_heartbeat_send)) {
-        logmsg(LOGMSG_ERROR, "Invalid heartbeat alert time, need to define "
-                             "osql_heartbeat_send_time first.\n");
-        return 1;
-    }
-    return 0;
-}
-
 static int simulate_rowlock_deadlock_update(void *context, void *value)
 {
     comdb2_tunable *tunable = (comdb2_tunable *)context;
@@ -1079,6 +1059,11 @@ static int hostname_update(void *context, void *value)
 
 /* Forward declaration */
 int ctrace_set_rollat(void *unused, void *value);
+
+int get_commit_lsn_map_switch_value()
+{
+    return gbl_utxnid_log && gbl_commit_lsn_map;
+}
 
 /* Return the value for sql_tranlevel_default. */
 static void *sql_tranlevel_default_value(void *context)

@@ -83,7 +83,6 @@ void reset_aa_counter(char *tblname);
 void create_coherency_lease_thread(bdb_state_type *bdb_state);
 void create_master_lease_thread(bdb_state_type *bdb_state);
 
-int gbl_net_lmt_upd_incoherent_nodes = 70;
 int gbl_rep_process_pstack_time = 30;
 
 char *lsn_to_str(char lsn_str[], DB_LSN *lsn);
@@ -1666,36 +1665,6 @@ static int net_getlsn_rectype(netinfo_type *netinfo_ptr, void *record, int len,
     if (offset) *offset = lsn.offset;
     if (rectype) *rectype = myrectype;
     return 0;
-}
-
-int net_getlsn_rtn(netinfo_type *netinfo_ptr, void *record, int len, int *file,
-                   int *offset)
-{
-    int rectype;
-    if ((net_getlsn_rectype(netinfo_ptr, record, len, file, offset, &rectype) ==
-         0) &&
-        (rectype == 7)) {
-        return 0;
-    }
-    return -1;
-}
-
-/* Given two outgoing net buffers, which one is lower */
-int net_cmplsn_rtn(netinfo_type *netinfo_ptr, void *x, int xlen, void *y,
-                   int ylen)
-{
-    int rc;
-    DB_LSN xlsn, ylsn;
-
-    /* Do not tolerate malformed buffers.  I am inserting x with the inorder
-     * flag.  It has to be correct. */
-    if ((rc = net_get_lsn_rectype(x, xlen, &xlsn, NULL)) != 0)
-        abort();
-
-    if ((rc = net_get_lsn_rectype(y, ylen, &ylsn, NULL)) != 0)
-        return -1;
-
-    return log_compare(&xlsn, &ylsn);
 }
 
 void net_newnode_rtn(netinfo_type *netinfo_ptr, struct interned_string *host, int portnum)
@@ -5411,7 +5380,6 @@ void *watcher_thread(void *arg)
     extern int gbl_truncating_log;
     char *master_host = db_eid_invalid;
     int stopped_count = 0;
-    int i;
     int time_now, time_then;
     int rc;
     int done = 0;
@@ -5437,8 +5405,6 @@ void *watcher_thread(void *arg)
           (intptr_t)pthread_self());
 
     poll(NULL, 0, (rand() % 100) + 1000);
-
-    i = 0;
 
     bdb_state->repinfo->disable_watcher = 0;
 
@@ -5474,8 +5440,6 @@ void *watcher_thread(void *arg)
             continue;
         }
         stopped_count = 0;
-
-        i++;
 
         BDB_READLOCK("watcher_thread");
 
@@ -5562,7 +5526,7 @@ void *watcher_thread(void *arg)
             count = net_get_all_nodes_connected_interned(bdb_state->repinfo->netinfo,
                                                 hostlist);
 
-            for (i = 0; i < count; i++)
+            for (int i = 0; i < count; i++)
                 if (is_incoherent(bdb_state, hostlist[i]))
                     num_skipped++;
 
@@ -5586,7 +5550,7 @@ void *watcher_thread(void *arg)
                 int now;
                 now = comdb2_time_epochms();
                 Pthread_mutex_lock(&(bdb_state->seqnum_info->lock));
-                for (i = 0; i < count; i++) {
+                for (int i = 0; i < count; i++) {
                     struct hostinfo *h = retrieve_hostinfo(hostlist[i]);
                     averager_purge_old(h->time_10seconds, now);
                     averager_purge_old(h->time_minute, now);
@@ -5681,7 +5645,7 @@ void *watcher_thread(void *arg)
                             count = net_get_all_nodes_connected(
                                 bdb_state->repinfo->netinfo, hostlist);
 
-                            for (i = 0; i < count; i++) {
+                            for (int i = 0; i < count; i++) {
                                 if ((bdb_state->callback->nodeup_rtn)(
                                         bdb_state, hostlist[i])) {
                                     logmsg(LOGMSG_WARN, 
@@ -5820,11 +5784,6 @@ void *watcher_thread(void *arg)
                 }
             }
 
-            /* try to re-establish connections to everyone after a few failures */
-            if (i > 10) {
-                connect_to_all(bdb_state->repinfo->netinfo);
-                i = 0;
-            }
             if (!bdb_state->repinfo->in_election) {
                 call_for_election(bdb_state, __func__, __LINE__);
             }

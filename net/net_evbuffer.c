@@ -110,8 +110,6 @@
 #define hputs_nd(a) no_distress_logmsg(hprintf_format(a))
 
 int gbl_pb_connectmsg = 1;
-int gbl_libevent = 1;
-int gbl_libevent_appsock = 1;
 int gbl_libevent_rte_only = 0;
 
 extern char gbl_dbname[MAX_DBNAME_LENGTH];
@@ -437,8 +435,6 @@ static void host_node_open(host_node_type *host_node_ptr, int fd)
     host_node_ptr->fd = fd;
     host_node_ptr->closed = 0;
     host_node_ptr->decom_flag = 0;
-    host_node_ptr->distress = 0;
-    host_node_ptr->really_closed = 0;
 }
 
 static void host_node_close(host_node_type *host_node_ptr)
@@ -447,8 +443,6 @@ static void host_node_close(host_node_type *host_node_ptr)
     host_node_ptr->fd = -1;
     host_node_ptr->got_hello = 0;
     host_node_ptr->closed = 1;
-    host_node_ptr->distress = 1;
-    host_node_ptr->really_closed = 1;
 }
 
 static void shutdown_close(int fd)
@@ -474,15 +468,14 @@ static void *do_pstack(void *arg)
 }
 
 #define timeval_to_ms(x) x.tv_sec * 1000 + x.tv_usec / 1000
-int gbl_timer_warn_interval = 1500; //msec
-int gbl_timer_pstack_interval =  5 * 60; //sec
+int gbl_timer_warn_interval = 1500; //msec. To disable check, set to 0.
+int gbl_timer_pstack_interval =  5 * 60; //sec. To disable pstack, but keep monitoring, set to 0.
 extern struct timeval last_timer_pstack;
 static struct timeval last_timer_check;
 static struct event *check_timers_ev;
 static void check_timers(int dummyfd, short what, void *arg)
 {
     if (gbl_timer_warn_interval == 0) return;
-
     check_base_thd();
     int ms, need_pstack = 0;
     struct timeval now, diff;
@@ -508,6 +501,7 @@ static void check_timers(int dummyfd, short what, void *arg)
         logmsg(LOGMSG_WARN, "LONG FDB TICK:%dms\n", ms);
         need_pstack = 1;
     }
+
     timersub(&now, &dist_tick, &diff);
     ms = timeval_to_ms(diff);
     if (ms >= gbl_timer_warn_interval) {
@@ -515,7 +509,7 @@ static void check_timers(int dummyfd, short what, void *arg)
         need_pstack = 1;
     }
 
-    int thds = gbl_libevent_appsock && dedicated_appsock ? NUM_APPSOCK_RD : 0;
+    int thds = dedicated_appsock ? NUM_APPSOCK_RD : 0;
     for (int i = 0; i < thds; ++i) {
         timersub(&now, &appsock_tick[i], &diff);
         ms = timeval_to_ms(diff);
@@ -527,7 +521,7 @@ static void check_timers(int dummyfd, short what, void *arg)
     last_timer_check = now;
     if (!need_pstack) return;
     timersub(&now, &last_timer_pstack, &diff);
-    if (diff.tv_sec < gbl_timer_pstack_interval) return;
+    if (gbl_timer_pstack_interval == 0 || diff.tv_sec < gbl_timer_pstack_interval) return;
     logmsg(LOGMSG_WARN, "%s: Last pstack:%lds. Generating pstack\n", __func__, diff.tv_sec);
     pthread_t t;
     Pthread_create(&t, NULL, do_pstack, NULL);
@@ -1260,7 +1254,7 @@ static void exit_once_func(void)
     if (dedicated_dist) {
         stop_base(dist_base);
     }
-    if (gbl_libevent_appsock && dedicated_appsock) {
+    if (dedicated_appsock) {
         for (int i = 0; i < NUM_APPSOCK_RD; ++i) {
             stop_base(appsock_base[i]);
         }
@@ -2071,8 +2065,6 @@ static void host_connected(struct event_info *e, int fd, int connect_msg, struct
     }
 }
 
-extern int dist_heartbeats(dist_hbeats_type *dt);
-
 static void dist_heartbeat(int dummyfd, short what, void *data)
 {
     check_dist_thd();
@@ -2106,7 +2098,6 @@ int enable_dist_heartbeats(dist_hbeats_type *dt)
     return event_base_once(dist_base, -1, EV_TIMEOUT, do_enable_dist_heartbeats, dt, NULL);
 }
 
-extern void dist_heartbeat_free_tran(dist_hbeats_type *dt);
 static void do_disable_dist_heartbeats_and_free(int dummyfd, short what, void *data)
 {
     dist_hbeats_type *dt = data;
@@ -2792,7 +2783,6 @@ static void handle_appsock(netinfo_type *netinfo_ptr, struct sockaddr_in *ss, in
     evbuffer_free(buf);
     make_socket_blocking(fd);
     SBUF2 *sb = sbuf2open(fd, 0);
-    sbuf2setbufsize(sb, netinfo_ptr->bufsz);
     for (int i = n - 1; i > 0; --i) {
         sbuf2ungetc(req[i], sb);
     }
@@ -2897,16 +2887,11 @@ static void do_read(int fd, short what, void *data)
     a->fd = -1;
     accept_info_free(a);
     a = NULL;
-    if (!gbl_libevent_appsock) {
-        handle_appsock(netinfo_ptr, &ss, first_byte, buf, fd);
-        return;
-    }
     if (should_reject_request()) {
         evbuffer_free(buf);
         shutdown_close(fd);
         return;
     }
-
     if ((do_appsock_evbuffer(buf, &ss, fd, 0, secure)) == 0) return;
     handle_appsock(netinfo_ptr, &ss, first_byte, buf, fd);
 }
@@ -3384,17 +3369,15 @@ static void setup_bases(void)
         dist_thd = base_thd;
         dist_base = base;
     }
-    if (gbl_libevent_appsock) {
-        if (dedicated_appsock) {
-            for (int i = 0; i < NUM_APPSOCK_RD; ++i) {
-                gettimeofday(&appsock_tick[i], NULL);
-                init_base_priority(&appsock_thd[i], &appsock_base[i], "appsock", 2, &appsock_tick[i]);
-            }
-        } else {
-            for (int i = 0; i < NUM_APPSOCK_RD; ++i) {
-                appsock_base[i] = base;
-                appsock_thd[i] = base_thd;
-            }
+    if (dedicated_appsock) {
+        for (int i = 0; i < NUM_APPSOCK_RD; ++i) {
+            gettimeofday(&appsock_tick[i], NULL);
+            init_base_priority(&appsock_thd[i], &appsock_base[i], "appsock", 2, &appsock_tick[i]);
+        }
+    } else {
+        for (int i = 0; i < NUM_APPSOCK_RD; ++i) {
+            appsock_base[i] = base;
+            appsock_thd[i] = base_thd;
         }
     }
     if (writer_policy == POLICY_NONE) {
@@ -3546,7 +3529,7 @@ void add_host(host_node_type *host_node_ptr)
 {
     netinfo_type *netinfo_ptr = host_node_ptr->netinfo_ptr;
     int fake = netinfo_ptr->fake;
-    if (gbl_create_mode || gbl_exit || fake || !gbl_libevent) {
+    if (gbl_create_mode || gbl_exit || fake) {
         return;
     }
     init_event_net(netinfo_ptr);

@@ -629,11 +629,6 @@ int toggle_case_sensitive_like(sqlite3 *db, int enable)
     return rc;
 }
 
-extern pthread_mutex_t appsock_conn_lk;
-
-pthread_mutex_t clnt_lk = PTHREAD_MUTEX_INITIALIZER;
-LISTC_T(struct sqlclntstate) clntlist;
-
 static int64_t connid = 0;
 
 /* lru_evbuffers may be accessed by multiple sql threads, hence we need to protect it with a mutex. */
@@ -4274,50 +4269,6 @@ static int check_done_func(void *obj)
     return -1;
 }
 
-static int close_lru_client(int curr_conns, struct sqlclntstate *clnt, int max_iteration)
-{
-    int rc = -1;
-    Pthread_mutex_lock(&clnt_lk);
-    struct sqlclntstate *lru_clnt = listc_findl(&clntlist, check_done_func, clnt, max_iteration);
-    if (lru_clnt == clnt) {
-        /* This is a new client however its one of the  first 'max_iteration' connections. */
-        rc = 0;
-    } else if (lru_clnt) {
-        lru_clnt->statement_timedout = 1; /* disallow any new query */
-        int fd = get_fileno(lru_clnt);
-        shutdown(fd, SHUT_RD);
-        logmsg(LOGMSG_WARN,
-               "%s: Closing least recently used connection fd %d, total %d \n",
-               __func__, fd, curr_conns);
-        rc = 0;
-    }
-    Pthread_mutex_unlock(&clnt_lk);
-    return rc;
-}
-
-int check_active_appsock_connections(struct sqlclntstate *clnt)
-{
-    int rc = 0;
-    int num_retry = 0;
-retry:
-    num_retry++;
-    Pthread_mutex_lock(&appsock_conn_lk);
-    if (active_appsock_conns > bdb_attr_get(thedb->bdb_attr, BDB_ATTR_MAXAPPSOCKSLIMIT)) {
-        /* We might be a new connection or else try to close an old connection */
-        if (close_lru_client(active_appsock_conns, clnt, bdb_attr_get(thedb->bdb_attr, BDB_ATTR_MAXAPPSOCKSLIMIT)) !=
-            0) {
-            if (num_retry < 5) {
-                Pthread_mutex_unlock(&appsock_conn_lk);
-                sleep(1);
-                goto retry;
-            }
-            rc = -1;
-        }
-    }
-    Pthread_mutex_unlock(&appsock_conn_lk);
-    return rc;
-}
-
 /**
  * Main driver of SQL processing, for both sqlite and non-sqlite requests
  */
@@ -4989,7 +4940,6 @@ static int enqueue_sql_query(struct sqlclntstate *clnt)
     Pthread_mutex_lock(&clnt->wait_mutex);
     clnt->deadlock_recovered = 0;
 
-    Pthread_mutex_lock(&clnt_lk);
     /* Reset clnt->thd: there's no guarantee that this clnt is going to be
        dispatched to the same sql thread it previously ran under; Also, that
        thread may not even exist any more (eg aged out), causing
@@ -4997,10 +4947,7 @@ static int enqueue_sql_query(struct sqlclntstate *clnt)
        alloca'd on the stack by the sql thread */
     clnt->thd = NULL;
     clnt->done = 0;
-    if (clnt->statement_timedout)
-        fail_dispatch = 1;
-    Pthread_mutex_unlock(&clnt_lk);
-
+    if (clnt->statement_timedout) fail_dispatch = 1;
     clnt->total_sql++;
     clnt->sql_since_reset++;
 
@@ -5073,24 +5020,9 @@ static int enqueue_sql_query(struct sqlclntstate *clnt)
     return rc;
 }
 
-static void mark_clnt_as_recently_used(struct sqlclntstate *clnt)
-{
-    if (clnt->connid) { // Only for connections which we track
-        /*
-        ** NOTE: Mark the current connection as "in use".  This moves it
-        **       from (somewhere?) within the list to the list end.
-        */
-        Pthread_mutex_lock(&clnt_lk);
-        listc_rfl(&clntlist, clnt);
-        listc_abl(&clntlist, clnt);
-        Pthread_mutex_unlock(&clnt_lk);
-    }
-}
-
 static int wait_for_sql_query(struct sqlclntstate *clnt)
 {
     /* successful dispatch or queueing, enable heartbeats */
-    mark_clnt_as_recently_used(clnt);
     Pthread_mutex_lock(&clnt->wait_mutex);
     if (clnt->exec_lua_thread)
         clnt->ready_for_heartbeats = 0;
@@ -5392,7 +5324,6 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
         clnt->num_resets++;
         clnt->last_reset_time = comdb2_time_epoch();
         clnt_change_state(clnt, CONNECTION_RESET);
-        clnt->plugin.set_timeout(clnt, gbl_sqlwrtimeoutms);
         if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
             if (gbl_unexpected_last_type_warn)
                 logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n", clnt->lastresptype,
@@ -5575,21 +5506,6 @@ int sbuf_is_local(SBUF2 *sb)
     if (addr.sin_addr.s_addr == htonl(INADDR_LOOPBACK))
         return 1;
 
-    return 0;
-}
-
-int sbuf_set_timeout(struct sqlclntstate *clnt, SBUF2 *sb, int wr_timeout_ms)
-{
-    int no_timeout = disable_server_sql_timeouts();
-    int rd_timeout = bdb_attr_get(thedb->bdb_attr, BDB_ATTR_MAX_SQL_IDLE_TIME);
-    //sbuf2settimeout(sb, rd_timeout * 1000, no_timeout ? 0 : wr_timeout_ms);
-    sbuf2settimeout(sb, 0, no_timeout ? 0 : wr_timeout_ms);
-    if (wr_timeout_ms == 0) {
-        net_add_watch(sb, 0, 0);
-    } else {
-        int wr_timeout = no_timeout ? 0 : wr_timeout_ms / 1000;
-        net_add_watch_warning(sb, rd_timeout, wr_timeout, clnt, watcher_warning_function);
-    }
     return 0;
 }
 
@@ -6280,11 +6196,6 @@ int sqlpool_init(void)
     return 0;
 }
 
-int clnt_stats_init(void) {
-    listc_init(&clntlist, offsetof(struct sqlclntstate, lnk));
-    return 0;
-}
-
 static const char* connstate_str(enum connection_state s) {
     switch (s) {
         case CONNECTION_NEW:
@@ -6705,16 +6616,6 @@ static void sql_thread_describe(void *obj, FILE *out)
     logmsg(LOGMSG_USER, "%s \"%s\"\n", clnt->origin, clnt->sql);
 }
 
-int watcher_warning_function(void *arg, int timeout, int gap)
-{
-    struct sqlclntstate *clnt = arg;
-    logmsg(LOGMSG_WARN,
-            "WARNING: appsock idle for %d seconds (%d), connected from %s\n",
-            gap, timeout, (clnt->origin) ? clnt->origin : "(unknown)");
-
-    return 1; /* cancel recurrent */
-}
-
 /**
  * Callback for sqlite during prepare, to retrieve default tzname
  * Required by stat4 which need datetime conversions during prepare
@@ -6754,21 +6655,6 @@ void run_internal_sql(char *sql)
             logmsg(LOGMSG_ERROR, "%s: Error: '%s' \n", __func__, clnt.saved_errstr);
     }
     end_internal_sql_clnt(&clnt);
-}
-
-void clnt_register(struct sqlclntstate *clnt) {
-    clnt->state = CONNECTION_NEW;
-    clnt->connect_time = comdb2_time_epoch();
-    Pthread_mutex_lock(&clnt_lk);
-    clnt->connid = ATOMIC_ADD64(connid, 1);
-    listc_abl(&clntlist, clnt);
-    Pthread_mutex_unlock(&clnt_lk);
-}
-
-void clnt_unregister(struct sqlclntstate *clnt) {
-    Pthread_mutex_lock(&clnt_lk);
-    listc_rfl(&clntlist, clnt);
-    Pthread_mutex_unlock(&clnt_lk);
 }
 
 static void gather_connection_int(struct connection_info *c, struct sqlclntstate *clnt)
@@ -6825,26 +6711,9 @@ static void gather_connections_evbuffer(struct connection_info **info, int *num_
     Pthread_mutex_unlock(&lru_evbuffers_mtx);
 }
 
-static void gather_connections_sbuf2(struct connection_info **info, int *num_connections)
-{
-    struct sqlclntstate *clnt;
-    Pthread_mutex_lock(&clnt_lk);
-    int num = *num_connections = listc_size(&clntlist);
-    struct connection_info *c = *info = malloc(num * sizeof(struct connection_info));
-    LISTC_FOR_EACH(&clntlist, clnt, lnk) {
-        gather_connection_int(c, clnt);
-        ++c;
-    }
-    Pthread_mutex_unlock(&clnt_lk);
-}
-
 int gather_connection_info(struct connection_info **info, int *num_connections)
 {
-    if (gbl_libevent_appsock) {
-        gather_connections_evbuffer(info, num_connections);
-    } else {
-        gather_connections_sbuf2(info, num_connections);
-    }
+    gather_connections_evbuffer(info, num_connections);
     return 0;
 }
 
@@ -6859,7 +6728,7 @@ void free_connection_info(struct connection_info *info, int num_connections)
     free(info);
 }
 
-static void log_long_running_stmts_evbuffer(void)
+void reqlog_long_running_sql_statements(void)
 {
     struct sqlclntstate *clnt;
     Pthread_mutex_lock(&lru_evbuffers_mtx);
@@ -6869,30 +6738,6 @@ static void log_long_running_stmts_evbuffer(void)
         Pthread_mutex_unlock(&clnt->sql_lk);
     }
     Pthread_mutex_unlock(&lru_evbuffers_mtx);
-}
-
-static void log_long_running_stmts_sbuf(void)
-{
-    /* FIXME: We traverse the list of clients while holding clnt_lk; clnt->done
-     * is set while holding clnt->wait_mutex and clnt->sql is cleared without
-     * holding any locks */
-    struct sqlclntstate *clnt;
-    Pthread_mutex_lock(&clnt_lk);
-    LISTC_FOR_EACH(&clntlist, clnt, lnk) {
-        Pthread_mutex_lock(&clnt->sql_lk);
-        reqlog_long_running_clnt(clnt);
-        Pthread_mutex_unlock(&clnt->sql_lk);
-    }
-    Pthread_mutex_unlock(&clnt_lk);
-}
-
-void reqlog_long_running_sql_statements(void)
-{
-    if (gbl_libevent_appsock) {
-        log_long_running_stmts_evbuffer();
-    } else {
-        log_long_running_stmts_sbuf();
-    }
 }
 
 void add_sql_evbuffer(struct sqlclntstate *clnt)
@@ -7151,10 +6996,6 @@ static int internal_has_x509(struct sqlclntstate *a)
     return 0;
 }
 static int internal_get_x509_attr(struct sqlclntstate *a, int b, void *c, int d)
-{
-    return -1;
-}
-static int internal_set_timeout(struct sqlclntstate *clnt, int timeout_ms)
 {
     return -1;
 }
