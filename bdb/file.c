@@ -719,6 +719,10 @@ static void form_queuedb_name_int(bdb_state_type *bdb_state, char *name,
                                   size_t len, unsigned long long file_version)
 {
     if (file_version != 0) {
+        /* Flip to form name on big-endian */
+#if defined(_IBM_SOURCE) || defined(_SUN_SOURCE)
+        file_version = flibc_llflip(file_version);
+#endif
         snprintf0(name, len, "XXX.%s_%016llx.queuedb", bdb_state->name,
                   file_version);
     } else {
@@ -732,7 +736,8 @@ static int form_queuedb_name(bdb_state_type *bdb_state, tran_type *tran,
     unsigned long long ver;
     int rc, bdberr;
     if (create && USE_GENID_IN_QUEUEDB_FILE_NAME()) {
-        ver = flibc_htonll(bdb_get_cmp_context(bdb_state));
+        /* Always flip before writing to llmeta */
+        ver = flibc_llflip(bdb_get_cmp_context(bdb_state));
         rc = bdb_new_file_version_qdb(bdb_state, tran, file_num, ver, &bdberr);
         if (rc || bdberr != BDBERR_NOERROR) {
             return -1;
@@ -2193,8 +2198,9 @@ static void bdb_appsock(netinfo_type *netinfo, SBUF2 *sb)
 extern int gbl_pstack_self;
 void pstack_self(void)
 {
-    if (!gbl_pstack_self)
-        return;
+    if (!gbl_pstack_self) return;
+
+    gettimeofday(&last_timer_pstack, NULL);
 
     char cmd[256];
     char output[20] = "/tmp/pstack.XXXXXX";
@@ -2234,7 +2240,6 @@ void pstack_self(void)
     gbl_logmsg_ctrace = old;
     fclose(out);
     unlink(output);
-    gettimeofday(&last_timer_pstack, NULL);
 }
 
 static void panic_func(DB_ENV *dbenv, int errval)
@@ -8179,6 +8184,9 @@ int bdb_check_files_on_disk(bdb_state_type *bdb_state, const char *tblname, int 
 
         if (oldfile_add(munged_name, lognum, __func__, __LINE__, spew_debug)) {
             print(bdb_state, "failed to add old file to hash: %s\n", ent->d_name);
+            /* oldfile list full */
+            rc = E2BIG;
+            *bdberr = BDBERR_MISC;
             break;
         } else {
             if (spew_debug)
@@ -8190,8 +8198,9 @@ int bdb_check_files_on_disk(bdb_state_type *bdb_state, const char *tblname, int 
 
     closedir(dirp);
     free(buf);
-    *bdberr = BDBERR_NOERROR;
-    return 0;
+    if (rc == 0)
+        *bdberr = BDBERR_NOERROR;
+    return rc;
 }
 
 

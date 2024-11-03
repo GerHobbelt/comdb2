@@ -31,16 +31,14 @@
 #include <pthread.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
-#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <inttypes.h>
+#include <fcntl.h>
 
 #include "cdb2api.h"
 
 #include "sqlquery.pb-c.h"
 #include "sqlresponse.pb-c.h"
-#include <fcntl.h>
 
 /*
 *******************************************************************************
@@ -1015,9 +1013,9 @@ struct cdb2_hndl {
     int cached_port;      /* port of a sockpool connection */
     SBUF2 *sb;
     int dbnum;
-    int num_hosts;
-    int num_hosts_sameroom;
-    int node_seq;
+    int num_hosts;          /* total number of hosts */
+    int num_hosts_sameroom; /* number of hosts that are in my datacenter (aka room) */
+    int node_seq;           /* fail over to the `node_seq'-th host */
     int in_trans;
     int temp_trans;
     int is_retry;
@@ -1667,6 +1665,16 @@ static int read_available_comdb2db_configs(cdb2_hndl_tp *hndl, char comdb2db_hos
         }
     }
     if (!noLock) pthread_mutex_unlock(&cdb2_cfg_lock);
+    return 0;
+}
+
+int cdb2_get_comdb2db(char **comdb2dbname, char **default_type)
+{
+    if (!strlen(cdb2_comdb2dbname)) {
+        read_available_comdb2db_configs(NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0);
+    }
+    (*comdb2dbname) = strdup(cdb2_comdb2dbname);
+    (*default_type) = strdup(cdb2_default_cluster);
     return 0;
 }
 
@@ -2375,7 +2383,7 @@ static int newsql_connect_via_fd(cdb2_hndl_tp *hndl)
 
     char *endptr;
     int fd = strtol(hndl->type, &endptr, 10);
-    if (endptr != 0 || fd < 3) { /* shouldn't be stdin, stdout, stderr */
+    if (*endptr != 0 || fd < 3) { /* shouldn't be stdin, stdout, stderr */
         debugprint("ERROR: %s:%d invalid fd:%s", __func__, __LINE__, hndl->type);
     } else {
         if ((sb = sbuf2open(fd, 0)) == 0) {
@@ -2638,11 +2646,16 @@ void cdb2_use_hint(cdb2_hndl_tp *hndl)
     }
 }
 
-/* try to connect to range from 0 to max starting with begin */
-static inline int cdb2_try_connect_range(cdb2_hndl_tp *hndl, int begin, int max)
+/* try to connect to range from low (inclusive) to high (exclusive) starting with begin */
+static inline int cdb2_try_connect_range(cdb2_hndl_tp *hndl, int begin, int low, int high)
 {
-    for (int j = 0; j < max; j++) {
-        int i = (begin + j) % max;
+    int max = high - low;
+    /* Starting from `begin', try up to `max' times */
+    for (int j = 0, i = begin; j < max; j++, i++) {
+        /* if we've reached the end of the range, start from the beginning */
+        if (i == high)
+            i = low;
+
         hndl->node_seq = i + 1;
         if (i == hndl->master || i == hndl->connected_host || hndl->hosts_connected[i] == 1)
             continue;
@@ -2684,14 +2697,15 @@ static int cdb2_random_int()
     return nrand48(rand_state);
 }
 
-/* Get random value from range 0 to max-1 excluding 1 value */
-static int getRandomExclude(int max, int exclude)
+/* Get random value from range min to max-1 excluding 1 value */
+static int getRandomExclude(int min, int max, int exclude)
 {
     int val = 0;
-    if (max < 2)
-        return 0;
+    /* If the range has only 1 value, return it */
+    if (max - min < 2)
+        return min;
     for (int i = 0; i < 10; i++) {
-        val = cdb2_random_int() % max;
+        val = cdb2_random_int() % (max - min) + min;
         if (val != exclude)
             return val;
     }
@@ -2718,18 +2732,18 @@ retry_connect:
     if ((hndl->node_seq == 0) &&
         ((hndl->flags & CDB2_RANDOM) || ((hndl->flags & CDB2_RANDOMROOM) &&
                                          (hndl->num_hosts_sameroom == 0)))) {
-        hndl->node_seq = getRandomExclude(hndl->num_hosts, hndl->master);
+        hndl->node_seq = getRandomExclude(0, hndl->num_hosts, hndl->master);
     } else if ((hndl->flags & CDB2_RANDOMROOM) && (hndl->node_seq == 0) &&
                (hndl->num_hosts_sameroom > 0)) {
-        hndl->node_seq =
-            getRandomExclude(hndl->num_hosts_sameroom, hndl->master);
+        hndl->node_seq = getRandomExclude(0, hndl->num_hosts_sameroom, hndl->master);
         /* First try on same room. */
-        if (0 == cdb2_try_connect_range(hndl, hndl->node_seq,
-                                        hndl->num_hosts_sameroom))
+        if (0 == cdb2_try_connect_range(hndl, hndl->node_seq, 0, hndl->num_hosts_sameroom))
             return 0;
+        /* If we fail to connect to any of the nodes in our DC, choose a random start point from the other DC */
+        hndl->node_seq = getRandomExclude(hndl->num_hosts_sameroom, hndl->num_hosts, hndl->master);
     }
 
-    if (0 == cdb2_try_connect_range(hndl, hndl->node_seq, hndl->num_hosts))
+    if (0 == cdb2_try_connect_range(hndl, hndl->node_seq, 0, hndl->num_hosts))
         return 0;
 
     if (hndl->sb == NULL) {
@@ -6057,6 +6071,10 @@ retry:
                 goto after_callback;
             }
         }
+
+        /* If there's another datacenter, choose a random starting point from there. */
+        if (hndl->num_hosts > hndl->num_hosts_sameroom)
+            node_seq = rand() % (hndl->num_hosts - hndl->num_hosts_sameroom) + hndl->num_hosts_sameroom;
     }
 
     /* Try everything now */
@@ -7093,4 +7111,41 @@ static int refresh_gbl_events_on_hndl(cdb2_hndl_tp *hndl)
 
     pthread_mutex_unlock(&cdb2_event_mutex);
     return 0;
+}
+
+char *cdb2_string_escape(cdb2_hndl_tp *hndl, const char *src){
+    const char escapechar = '\'';
+    size_t count = 2; // set initial value for wrapping characters
+    
+    char *curr = strchr(src, escapechar);
+    while (curr != NULL) {
+        ++count;
+        curr = strchr(curr + 1, escapechar);
+    }
+
+    size_t len = count + strlen(src) + 1;
+    char *out = malloc(len);
+    char *dest = out;
+    *dest = escapechar;
+    ++dest;
+
+    while (*src) {
+        curr = strchr(src, escapechar);
+        if (curr == NULL) {
+            strcpy(dest, src);
+            dest += strlen(src);
+            break;
+        }
+    
+        size_t toklen = curr - src + 1;
+        strncpy(dest, src, toklen);
+   
+        src = curr + 1;
+        dest += toklen;
+        *dest = escapechar;
+        ++dest;
+    }
+    
+    strcpy(dest, "\'\0");
+    return out;
 }

@@ -2594,7 +2594,11 @@ typedef int ynVar;
 ** allocated, regardless of whether or not EP_Reduced is set.
 */
 struct Expr {
+#if defined(SQLITE_BUILDING_FOR_COMDB2)
+  u16 op;                 /* Operation performed by this node */
+#else /* defined(SQLITE_BUILDING_FOR_COMDB2) */
   u8 op;                 /* Operation performed by this node */
+#endif 
   char affinity;         /* The affinity of the column or 0 if not a column */
   u32 flags;             /* Various flags.  EP_* See below */
   union {
@@ -3485,6 +3489,7 @@ struct AuthContext {
 #define OPFLAG_FORCE_VERIFY   0x100
 #define OPFLAG_IGNORE_FAILURE 0x200
 #define OPFLAG_MKREC_COMDB2   0x400
+#define OPFLAG_SKIPSCAN       0x800
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
 
 /*
@@ -4298,6 +4303,7 @@ void sqlite3ExprIfFalseDup(Parse*, Expr*, int, int);
 Table *sqlite3FindTable(sqlite3*,const char*, const char*);
 #if defined(SQLITE_BUILDING_FOR_COMDB2)
 Table *sqlite3FindTableCheckOnly(sqlite3*,const char*, const char*);
+Table *sqlite3FindTableCheckOnlyNoAlias(sqlite3*,const char*, const char*);
 Table *sqlite3FindTableByAnalysisLoad(sqlite3*,const char*, const char*);
 #endif /* defined(SQLITE_BUILDING_FOR_COMDB2) */
 #define LOCATE_VIEW    0x01

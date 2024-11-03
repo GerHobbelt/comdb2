@@ -80,6 +80,7 @@ contrib/docker/volumes
 
 # editor files
 *.swp
+.cache
 .clangd
 .DS_Store
 tags
@@ -92,3 +93,4 @@ plugins/bb-plugins
 /cmake-build*
 /.vscode/*
 .clang-format
+/.devcontainer/*

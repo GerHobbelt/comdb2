@@ -501,7 +501,7 @@ REGISTER_TUNABLE("foreign_db_push_remote", NULL, TUNABLE_BOOLEAN,
                  &gbl_fdb_push_remote, NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("foreign_db_push_redirect", "Redirect fdb query to run via client instead of on server. (Default: off)", TUNABLE_BOOLEAN,
                  &gbl_fdb_push_redirect_foreign, NOARG, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("foreign_db_auth_enabled", "Redirect extern auth data to remote server. (Default: off)",
+REGISTER_TUNABLE("foreign_db_auth_enabled", "Redirect extern auth data to remote server. (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_fdb_auth_enabled, NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("fullrecovery", "Attempt to run database "
                                  "recovery from the beginning of "
@@ -671,6 +671,8 @@ REGISTER_TUNABLE("master_retry_poll_ms",
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("debug_blkseq_race", "Pause after adding blkseq to reproduce blkseq race.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_debug_blkseq_race, INTERNAL, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("debug_stat4dump_loop", "Start a thread which calls stat4dump in a loop.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_debug_stat4dump_loop, INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("master_swing_osql_verbose",
                  "Produce verbose trace for SQL handlers detecting a master "
                  "change. (Default: off)",

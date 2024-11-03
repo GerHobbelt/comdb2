@@ -76,12 +76,10 @@ static void sql_timeout_cb(int fd, short what, void *arg)
 {
     struct sqlwriter *writer = arg;
     check_thd(writer->timer_thd);
-    int rc = pthread_mutex_trylock(&writer->wr_lock);
-    if (rc == EBUSY) {
+    if (pthread_mutex_trylock(&writer->wr_lock)) {
         struct timeval retry = {.tv_usec = 100 * 1000};
         event_add(writer->timeout_ev, &retry);
-    } else if (rc) {
-        abort();
+        return;
     }
     if (!writer->bad && !writer->done) {
         writer->do_timeout = 1;
@@ -96,6 +94,7 @@ static void sql_heartbeat_cb(int fd, short what, void *arg);
 
 void sql_enable_heartbeat(struct sqlwriter *writer)
 {
+    writer->pack_hb(writer, writer->clnt); /* newsql_pack_hb */
     struct timeval heartbeat_time = {.tv_usec = 100000 }; // 100ms
     event_add(writer->heartbeat_ev, &heartbeat_time);
 }
@@ -349,8 +348,11 @@ static int sql_pack_heartbeat(struct sqlwriter *writer)
 
 static void sql_trickle_int(struct sqlwriter *writer, int fd)
 {
-    if (!writer->wr_continue || writer->bad || writer->done) {
+    if (writer->bad || writer->done) {
         sql_disable_heartbeat(writer);
+        return;
+    }
+    if (!writer->wr_continue) {
         return;
     }
     const int outstanding = evbuffer_get_length(writer->wr_buf);
@@ -386,14 +388,15 @@ static void sql_trickle_cb(int fd, short what, void *arg)
 static void sql_heartbeat_cb(int fd, short what, void *arg)
 {
     struct sqlwriter *writer = arg;
-    if (pthread_mutex_trylock(&writer->wr_lock) == 0) {
+    if (pthread_mutex_trylock(&writer->wr_lock)) return;
+    if (writer->wr_continue) {
         int len = evbuffer_get_length(writer->wr_buf);
         time_t now = time(NULL);
         if (len || difftime(now, writer->sent_at) >= min_hb_time) {
             event_add(writer->heartbeat_trickle_ev, NULL);
         }
-        Pthread_mutex_unlock(&writer->wr_lock);
     }
+    Pthread_mutex_unlock(&writer->wr_lock);
 }
 
 void sql_reset(struct sqlwriter *writer)
