@@ -4553,6 +4553,7 @@ processor_thd(struct thdpool *pool, void *work, void *thddata, int op)
 		LISTC_FOR_EACH(rp->lc.child_utxnids, elt, lnk) {
 			if ((ret = __txn_commit_map_add_nolock(dbenv, elt->utxnid, rp->commit_lsn)) != 0) {
 				Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
+				logmsg(LOGMSG_ERROR, "%s failed at line %d\n", __func__, __LINE__);
 				goto err;
 			}
 		}
@@ -5079,7 +5080,38 @@ __rep_process_txn_int(dbenv, rctl, rec, ltrans, maxlsn, commit_gen, lockid, rp,
 			goto err;
 		}
 
+		// Must add to commit lsn map after acquiring locks but before early acking.
+		//
+		// Why?
+		//
+		// 1) Must add to commit lsn map before early acking. If not:
+		//		DB early acks to the client ->
+		//		client starts snapshot txn. snapshot target lsn may be less than the lsn of 
+		//		the client's previous committed txn ->
+		//		snapshot rolls back the client's previous committed txn.
+		//
+		// * By adding to the commit lsn map before early acking, we ensure that snapshot 
+		// txns never roll back a txn that committed before it started from the client's perspective.
+		//
+		// 2) Must acquire locks before adding to the commit lsn map. If not:
+		// 		txn commit lsn is added to the map ->
+		//		new snapshot starts with this txn's commit lsn as its target lsn ->
+		//		if snapshot views a page before the other txn acquires a lock on it, it uses the old state;
+		//		otherwise, it blocks on the lock and uses the new state.
+		//
+		// * By adding to the commit lsn map after acquiring locks we ensure that a snapshot txn whose 
+		// target lsn is the commit lsn of an incompletely applied transaction sees all of its updates.
+		//
+		if (commit_lsn_map) {
+			if ((ret = __txn_commit_map_add(dbenv, 
+					utxnid, rctl->lsn)), ret != 0) {
+				line = __LINE__;
+				goto err;
+			}
+		}
+
 		/* Set the last-locked lsn */
+		// This can cause an early ack regardless of the value of gbl_early.
 		__rep_set_last_locked(dbenv, &(rctl->lsn));
 
 		/* got all the locks.  ack back early */
@@ -5092,36 +5124,6 @@ __rep_process_txn_int(dbenv, rctl, rec, ltrans, maxlsn, commit_gen, lockid, rp,
 			) {
 			static int lastpr = 0;
 			int now;
-
-			// Must add to commit lsn map after acquiring locks but before early acking.
-			//
-			// Why?
-			//
-			// 1) Must add to commit lsn map before early acking. If not:
-			//		DB early acks to the client ->
-			//		client starts snapshot txn. snapshot target lsn may be less than the lsn of 
-			//		the client's previous committed txn ->
-			//		snapshot rolls back the client's previous committed txn.
-			//
-			// * By adding to the commit lsn map before early acking, we ensure that snapshot 
-			// txns never roll back a txn that committed before it started from the client's perspective.
-			//
-			// 2) Must acquire locks before adding to the commit lsn map. If not:
-			// 		txn commit lsn is added to the map ->
-			//		new snapshot starts with this txn's commit lsn as its target lsn ->
-			//		if snapshot views a page before the other txn acquires a lock on it, it uses the old state;
-			//		otherwise, it blocks on the lock and uses the new state.
-			//
-			// * By adding to the commit lsn map after acquiring locks we ensure that a snapshot txn whose 
-			// target lsn is the commit lsn of an incompletely applied transaction sees all of its updates.
-			//
-			if (commit_lsn_map) {
-				if ((ret = __txn_commit_map_add(dbenv, 
-						utxnid, rctl->lsn)), ret != 0) {
-					logmsg(LOGMSG_DEBUG, "%s failed at line %d\n", __func__, __LINE__);
-					return ret;
-				}
-			}
 
 			if (gbl_early_ack_trace && ((now = time(NULL)) - lastpr)) {
 				logmsg(LOGMSG_USER, "%s line %d send early-ack for %d:%d "
@@ -5285,6 +5287,7 @@ __rep_process_txn_int(dbenv, rctl, rec, ltrans, maxlsn, commit_gen, lockid, rp,
 		LISTC_FOR_EACH(lc.child_utxnids, elt, lnk) {
 			if ((ret = __txn_commit_map_add_nolock(dbenv, elt->utxnid, rctl->lsn)) != 0) {
 				Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
+				line = __LINE__;
 				goto err;
 			}
 		}
@@ -5998,7 +6001,16 @@ bad_resize:	;
 		goto err;
 	}
 
+	if (commit_lsn_map) {
+		if ((ret = __txn_commit_map_add(dbenv, 
+				utxnid, ctrllsn)), ret != 0) {
+			logmsg(LOGMSG_ERROR, "%s failed at line %d\n", __func__, __LINE__);
+			goto err;
+		}
+	}
+
 	/* Set the last-locked lsn */
+	// This can cause an early ack regardless of the value of gbl_early.
 	__rep_set_last_locked(dbenv, &(rctl->lsn));
 
 	if ((gbl_early) && (!gbl_reallyearly) &&
@@ -6009,13 +6021,6 @@ bad_resize:	;
 		) {
 		static int lastpr = 0;
 		int now;
-		if (commit_lsn_map) {
-			if ((ret = __txn_commit_map_add(dbenv, 
-					utxnid, ctrllsn)), ret != 0) {
-				logmsg(LOGMSG_DEBUG, "%s failed at line %d\n", __func__, __LINE__);
-				return ret;
-			}
-		}
 
 		/* got all the locks.  ack back early */
 		if (gbl_early_ack_trace && ((now = time(NULL)) - lastpr)) {

@@ -375,7 +375,7 @@ int trans_start_set_retries(struct ireq *iq, tran_type *parent_trans,
     struct txn_properties props = { .retries = retries, .priority = priority };
 
     rc = trans_start_int(iq, (gbl_rowlocks ? NULL : parent_trans),
-							 out_trans, gbl_rowlocks, 0, &props, 0);
+                             out_trans, gbl_rowlocks, 0, &props, 0);
 
     if (verbose_deadlocks && retries != 0)
         logmsg(LOGMSG_USER, "%s ptran %p tran %p with retries %d\n", __func__,
@@ -5224,7 +5224,7 @@ int dbq_consume(struct ireq *iq, void *trans, int consumer, const struct bdb_que
     if (bdberr == BDBERR_READONLY)
         return ERR_NOMASTER;
     if (bdberr == BDBERR_DELNOTFOUND)
-        return  bdb_get_type(bdb_handle) == BDBTYPE_QUEUEDB ? ERR_UNCOMMITABLE_TXN: IX_NOTFND;
+        return  bdb_get_type(bdb_handle) == BDBTYPE_QUEUEDB ? ERR_UNCOMMITTABLE_TXN: IX_NOTFND;
     return map_unhandled_bdb_wr_rcode("bdb_queue_consume", bdberr);
 }
 

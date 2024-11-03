@@ -100,6 +100,7 @@ typedef long long tranid_t;
 #include "constraints.h"
 #include "osqlrpltypes.h"
 #include "macc_glue.h"
+#include "api_history.h"
 
 /* buffer offset, given base ptr & right ptr */
 #define BUFOFF(base, right) ((int)(((char *)right) - ((char *)base)))
@@ -351,7 +352,7 @@ enum RCODES {
     ERR_VERIFY_PI = 319,
     ERR_CHECK_CONSTRAINT = 320,
     ERR_INDEX_CONFLICT = 330,
-    ERR_UNCOMMITABLE_TXN = 404, /* txn is uncommitable, returns ERR_VERIFY
+    ERR_UNCOMMITTABLE_TXN = 404, /* txn is uncommittable, returns ERR_VERIFY
                                    rather than retry */
     ERR_DIST_ABORT = 430,       /* Prepared txn has been aborted */
     ERR_QUERY_REJECTED = 451,
@@ -478,11 +479,10 @@ enum RECOVER_DEADLOCK_FLAGS {
 
 enum CURTRAN_FLAGS { CURTRAN_RECOVERY = 0x00000001 };
 
-/* Raw stats, kept on a per origin machine basis.  This whole struct is
- * essentially an array of unsigneds.  Please don't add any other data
+/* Raw stats, kept on a per origin machine basis.  Please don't add any other data
  * type above `svc_time' as this allows us to easily sum it and diff it in a
  * loop in reqlog.c.
- * All of these stats are counters. */
+ */
 struct rawnodestats {
     unsigned opcode_counts[MAXTYPCNT];
     unsigned blockop_counts[NUM_BLOCKOP_OPCODES];
@@ -494,6 +494,7 @@ struct rawnodestats {
 
     pthread_mutex_t lk;
     hash_t *fingerprints;
+    api_history_t *api_history;
 };
 #define NUM_RAW_NODESTATS                                                      \
     (offsetof(struct rawnodestats, svc_time) / sizeof(unsigned))
@@ -1355,12 +1356,12 @@ struct ireq {
     SBUF2 *dbglog_file;
     int *nwrites;
 
-    /* List of indices that we've written to detect uncommitable upsert txns */
+    /* List of indices that we've written to detect uncommittable upsert txns */
     hash_t *vfy_idx_hash; 
 
     int dup_key_insert;
 
-    /* List of genids that we've written to detect uncommitable txn's */
+    /* List of genids that we've written to detect uncommittable txn's */
     hash_t *vfy_genid_hash;
     pool_t *vfy_genid_pool;
 

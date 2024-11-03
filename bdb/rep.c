@@ -1478,7 +1478,7 @@ static void *add_thread_int(bdb_state_type *bdb_state, int add_delay)
                bdb_state->repinfo->myhost);
         goto done;
     } else if (gbl_is_physical_replicant == 1) {
-	logmsg(LOGMSG_USER, "physrep: %s:%d: Not inserting a dummy record\n", __func__, __LINE__);
+        logmsg(LOGMSG_USER, "physrep: %s:%d: Not inserting a dummy record\n", __func__, __LINE__);
         goto done;
     }
 
@@ -1580,13 +1580,13 @@ recbuf (after the crc).  We want rectype = REP_LOG: it should be 7.
 
 If all of this is good, then retrieve the LSN from the rep_control:
 typedef struct __rep_control {
-        u_int32_t	rep_version;
-        u_int32_t	log_version;
+        u_int32_t    rep_version;
+        u_int32_t    log_version;
 
-        DB_LSN		lsn;
-        u_int32_t	rectype;
-        u_int32_t	gen;
-        u_int32_t	flags;
+        DB_LSN        lsn;
+        u_int32_t    rectype;
+        u_int32_t    gen;
+        u_int32_t    flags;
 } REP_CONTROL;
 */
 
@@ -5539,8 +5539,11 @@ void *watcher_thread(void *arg)
 
         net_timeout_watchlist(bdb_state->repinfo->netinfo);
 
-        if (bdb_state->passed_dbenv_open && bdb_state->repinfo->rep_process_message_start_time) {
-            time_t diff = comdb2_time_epoch() - bdb_state->repinfo->rep_process_message_start_time;
+        /* rep_process_message_start_time may change to 0 after we first look at it,
+         * and before we look at it again. remember its value. */
+        int stime = bdb_state->repinfo->rep_process_message_start_time;
+        if (bdb_state->passed_dbenv_open && stime) {
+            time_t diff = comdb2_time_epoch() - stime;
             if (diff >= gbl_rep_process_pstack_time) {
                 logmsg(LOGMSG_WARN, "rep_process_message running for %ld seconds, dumping thread pool to trc.c\n", diff);
                 gbl_logmsg_ctrace = 1;

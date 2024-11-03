@@ -2020,14 +2020,14 @@ alter_table_drop_cons ::= DROP CONSTRAINT nm(Y). {
 }
 
 alter_table_add_index ::= ADD uniqueflag(U) INDEX nm(I) LP sortlist(X) RP
-                          with_opt(O) where_opt(W). {
-  comdb2AddIndex(pParse, &I, X, 0, W, 0, 0, SQLITE_SO_ASC, (U == OE_Abort) ?
+                          with_opt(O) scanpt(BW) where_opt(W) scanpt(AW). {
+  comdb2AddIndex(pParse, &I, X, 0, W, BW, AW, SQLITE_SO_ASC, (U == OE_Abort) ?
                  SQLITE_IDXTYPE_UNIQUE : SQLITE_IDXTYPE_DUPKEY, O, 0);
 }
 // datacopy with include syntax
 alter_table_add_index ::= ADD uniqueflag(U) INDEX nm(I) LP sortlist(X) RP
-                          INCLUDE with_opt2(O) with_inc(P) where_opt(W). {
-  comdb2AddIndex(pParse, &I, X, 0, W, 0, 0, SQLITE_SO_ASC, (U == OE_Abort) ?
+                          INCLUDE with_opt2(O) with_inc(P) scanpt(BW) where_opt(W) scanpt(AW). {
+  comdb2AddIndex(pParse, &I, X, 0, W, BW, AW, SQLITE_SO_ASC, (U == OE_Abort) ?
                  SQLITE_IDXTYPE_UNIQUE : SQLITE_IDXTYPE_DUPKEY, O, P);
 }
 alter_table_drop_index ::= DROP INDEX nm(I). {
@@ -2550,15 +2550,15 @@ sfuncattr(A) ::= DETERMINISTIC.          {A = SQLITE_FUNC_CONSTANT;}
 sfuncattr(A) ::= .                       {A = 0;}
 
 cmd ::= dryrun CREATE LUA SCALAR FUNCTION nm(Q) sfuncattr(A). {
-	comdb2CreateScalarFunc(pParse, &Q, A);
+    comdb2CreateScalarFunc(pParse, &Q, A);
 }
 
 cmd ::= dryrun CREATE LUA AGGREGATE FUNCTION nm(Q). {
-	comdb2CreateAggFunc(pParse, &Q);
+    comdb2CreateAggFunc(pParse, &Q);
 }
 
 cmd ::= dryrun CREATE trigger(T) nm(Q) withsequence(S) ON table_trigger_event(E). {
-  comdb2CreateTrigger(pParse,T,S,&Q,E);
+    comdb2CreateTrigger(pParse,T,S,&Q,E);
 }
 
 %type trigger {int}

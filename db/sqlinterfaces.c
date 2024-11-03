@@ -147,6 +147,7 @@ extern pthread_mutex_t gbl_fingerprint_hash_mu;
 extern int gbl_alternate_normalize;
 extern int gbl_typessql;
 extern int gbl_modsnap_asof;
+extern int gbl_use_modsnap_for_snapshot;
 
 /* Once and for all:
 
@@ -1213,8 +1214,6 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
                                struct sqlclntstate *clnt, sqlite3_stmt *stmt,
                                int stmt_rc)
 {
-    struct rawnodestats *rawnodestats;
-
     if (thd == NULL || clnt == NULL) {
         return;
     }
@@ -1343,12 +1342,13 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
         }
     }
 
-    if ((rawnodestats = clnt->rawnodestats) != NULL) {
-        rawnodestats->sql_steps += get_sql_steps(thd);
-        time_metric_add(rawnodestats->svc_time, h->cost.time);
+    if (clnt->rawnodestats) {
+        clnt->rawnodestats->sql_steps += get_sql_steps(thd);
+        time_metric_add(clnt->rawnodestats->svc_time, h->cost.time);
         if (have_fingerprint)
             add_fingerprint_to_rawstats(clnt->rawnodestats, fingerprint, cost,
                                         rows, time);
+        update_api_history(clnt->rawnodestats->api_history, clnt->api_driver_name, clnt->api_driver_version);
     }
 
     reset_sql_steps(thd);
@@ -2199,7 +2199,7 @@ static int do_commitrollback(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                     /* convert this to user code */
                     rc = blockproc2sql_error(clnt->osql.xerr.errval, __func__,
                                              __LINE__);
-                    if (clnt->osql.xerr.errval == ERR_UNCOMMITABLE_TXN) {
+                    if (clnt->osql.xerr.errval == ERR_UNCOMMITTABLE_TXN) {
                         osql_set_replay(__FILE__, __LINE__, clnt,
                                         OSQL_RETRY_LAST);
                     }
@@ -3685,8 +3685,8 @@ static int rc_sqlite_to_client(struct sqlthdstate *thd,
         irc = errstat_get_rc(&clnt->osql.xerr);
         if (irc) {
             *perrstr = (char *)errstat_get_str(&clnt->osql.xerr);
-            /* Do not retry on ERR_UNCOMMITABLE_TXN. */
-            if (irc == ERR_UNCOMMITABLE_TXN) {
+            /* Do not retry on ERR_UNCOMMITTABLE_TXN. */
+            if (irc == ERR_UNCOMMITTABLE_TXN) {
                 osql_set_replay(__FILE__, __LINE__, clnt, OSQL_RETRY_LAST);
             } else if ((irc == ERR_SC) && (*perrstr == NULL || (*perrstr)[0] == '\0')) {
                 *perrstr = "a schema change error occurred";
@@ -5240,7 +5240,8 @@ int tdef_to_tranlevel(int tdef)
         return TRANLEVEL_SERIAL;
 
     case SQL_TDEF_SNAPISOL:
-        return TRANLEVEL_SNAPISOL;
+        return gbl_use_modsnap_for_snapshot ?
+               TRANLEVEL_MODSNAP : TRANLEVEL_SNAPISOL;
 
     default:
         logmsg(LOGMSG_FATAL, "%s: line %d Unknown modedef: %d", __func__, __LINE__,
@@ -6484,7 +6485,7 @@ int blockproc2sql_error(int rc, const char *func, int line)
     case 1229: /* ERR_BLOCK_FAILED + OP_FAILED_INTERNAL + ERR_FIND_CONSTRAINT */
         return CDB2ERR_FKEY_VIOLATION;
 
-    case ERR_UNCOMMITABLE_TXN:
+    case ERR_UNCOMMITTABLE_TXN:
         return CDB2ERR_VERIFY_ERROR;
 
     case ERR_REJECTED:
