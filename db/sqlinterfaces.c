@@ -2901,9 +2901,9 @@ static void _prepare_error(struct sqlthdstate *thd,
         return;
     }
 
-    if(rc == ERR_SQL_PREPARE && !rec->stmt)
+    if (rc == ERR_SQL_PREPARE && !rec->stmt) {
         errstr = "no statement";
-    if(rc == SQLITE_SCHEMA && rec->stmt && clnt->remsql_set.is_remsql) {
+    } else if (rc == SQLITE_SCHEMA && rec->stmt && clnt->remsql_set.is_remsql) {
         errstr = clnt->remsql_set.xerr.errstr;
     } else if (clnt->fdb_state.xerr.errval) {
         errstr = clnt->fdb_state.xerr.errstr;
@@ -4817,19 +4817,25 @@ void sqlengine_work_appsock(struct sqlthdstate *thd, struct sqlclntstate *clnt)
 
     assert(clnt->dbtran.pStmt == NULL);
 
-    /* everything going in is cursor based */
-    int rc = get_curtran(thedb->bdb_env, clnt);
-    if (rc) {
-        logmsg(LOGMSG_ERROR, "%s td %p: unable to get a CURSOR transaction, rc=%d!\n", __func__, (void *)pthread_self(),
-               rc);
-        send_run_error(clnt, "Client api should change nodes",
-                       CDB2ERR_CHANGENODE);
-        clnt->query_rc = -1;
-        clnt->osql.timings.query_finished = osql_log_time();
-        osql_log_time_done(clnt);
-        clnt_change_state(clnt, CONNECTION_IDLE);
-        signal_clnt_as_done(clnt);
-        return;
+    int is_legacy_request = 0;
+    if (strstr(clnt->sql, "comdb2_legacy"))
+        is_legacy_request = 1;
+
+    if (!is_legacy_request) {
+        /* everything going in is cursor based */
+        int rc = get_curtran(thedb->bdb_env, clnt);
+        if (rc) {
+            logmsg(LOGMSG_ERROR, "%s td %p: unable to get a CURSOR transaction, rc=%d!\n", __func__, (void *)pthread_self(),
+                    rc);
+            send_run_error(clnt, "Client api should change nodes",
+                    CDB2ERR_CHANGENODE);
+            clnt->query_rc = -1;
+            clnt->osql.timings.query_finished = osql_log_time();
+            osql_log_time_done(clnt);
+            clnt_change_state(clnt, CONNECTION_IDLE);
+            signal_clnt_as_done(clnt);
+            return;
+        }
     }
 
     /* it is a new query, it is time to clean the error */
@@ -4849,7 +4855,8 @@ void sqlengine_work_appsock(struct sqlthdstate *thd, struct sqlclntstate *clnt)
     /* actually execute the query */
     thrman_setfd(thd->thr_self, get_fileno(clnt));
 
-    osql_shadtbl_begin_query(thedb->bdb_env, clnt);
+    if (!is_legacy_request)
+        osql_shadtbl_begin_query(thedb->bdb_env, clnt);
 
     if (clnt->fdb_state.remote_sql_sb) {
         clnt->query_rc = execute_sql_query_offload(thd, clnt);
@@ -4863,7 +4870,8 @@ void sqlengine_work_appsock(struct sqlthdstate *thd, struct sqlclntstate *clnt)
         put_ref(&clnt->sql_ref);
     }
 
-    osql_shadtbl_done_query(thedb->bdb_env, clnt);
+    if (!is_legacy_request)
+        osql_shadtbl_done_query(thedb->bdb_env, clnt);
     thrman_setfd(thd->thr_self, -1);
 
     /* this is a compromise; we release the curtran here, even though
@@ -4871,9 +4879,11 @@ void sqlengine_work_appsock(struct sqlthdstate *thd, struct sqlclntstate *clnt)
        any query inside the begin/commit will be performed under its
        own locker id;
     */
-    if (put_curtran(thedb->bdb_env, clnt)) {
-        logmsg(LOGMSG_ERROR, "%s: unable to destroy a CURSOR transaction!\n",
-                __func__);
+    if (!is_legacy_request) {
+        if (put_curtran(thedb->bdb_env, clnt)) {
+            logmsg(LOGMSG_ERROR, "%s: unable to destroy a CURSOR transaction!\n",
+                    __func__);
+        }
     }
     clnt->osql.timings.query_finished = osql_log_time();
     osql_log_time_done(clnt);
@@ -5364,17 +5374,17 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
         TAILQ_INIT(&clnt->session_tbls);
         listc_init(&clnt->participants, offsetof(struct participant, linkv));
     } else {
-        clnt->sql_since_reset = 0;
-        clnt->num_resets++;
-        clnt->last_reset_time = comdb2_time_epoch();
-        clnt_change_state(clnt, CONNECTION_RESET);
-        if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0) {
-            if (gbl_unexpected_last_type_warn)
-                logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n", clnt->lastresptype,
-                       clnt->origin, clnt->argv0);
-            if (gbl_unexpected_last_type_abort)
-                abort();
-        }
+       clnt->sql_since_reset = 0;
+       clnt->num_resets++;
+       clnt->last_reset_time = comdb2_time_epoch();
+       clnt_change_state(clnt, CONNECTION_RESET);
+       if (clnt->lastresptype != RESPONSE_TYPE__LAST_ROW && clnt->lastresptype != 0 && clnt->lastresptype != RESPONSE_TYPE__RAW_DATA) {
+           if (gbl_unexpected_last_type_warn)
+               logmsg(LOGMSG_ERROR, "Unexpected previous response type %d origin %s task %s\n",
+                      clnt->lastresptype, clnt->origin, clnt->argv0);
+           if (gbl_unexpected_last_type_abort)
+               abort();
+       }
     }
 
     clnt->pPool = NULL; /* REDUNDANT? */
@@ -5456,7 +5466,8 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     clnt->num_retry = 0;
     clnt->early_retry = 0;
 
-    clnt->use_2pc = 0;
+    extern int gbl_2pc;
+    clnt->use_2pc = gbl_2pc;
     clnt->is_coordinator = 0;
     clnt->is_participant = 0;
     clear_participants(clnt);
@@ -5528,7 +5539,7 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
         bdb_unregister_modsnap(thedb->bdb_env, clnt->modsnap_registration);
         clnt->modsnap_registration = NULL;
     }
-    clnt->remsql_set.is_remsql = 0;
+    bzero(&clnt->remsql_set, sizeof(clnt->remsql_set));
 }
 
 void reset_clnt_flags(struct sqlclntstate *clnt)
@@ -5914,7 +5925,6 @@ static int record_query_cost(struct sql_thread *thd, struct sqlclntstate *clnt)
         } else if (c->lcl_tbl_name[0]) {
             strncpy0(stats[i].table, c->lcl_tbl_name, sizeof(stats[i].table));
         }
-        fprintf(stderr, "RECORDING id %d %s finds %d\n", i, stats[i].table, stats[i].nfind);
         i++;
     }
     return 0;

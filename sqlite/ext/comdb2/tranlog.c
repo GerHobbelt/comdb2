@@ -439,14 +439,21 @@ static u_int64_t get_timestamp_from_regop_rowlocks_record(char *data)
 
 static u_int32_t get_generation_from_regop_rowlocks_record(char *data)
 {
-    u_int32_t generation;
+    u_int32_t generation = 0;
+    off_t loff;
+    u_int32_t lflags;
     u_int32_t rectype;
     LOGCOPY_32(&rectype, data); 
     if ((rectype < 10000 && rectype > 2000) || rectype > 12000) {
-        LOGCOPY_32( &generation, &data[4 + 4 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8 + 4] );
+        loff = 4 + 4 + 8 + 8 + 4 + 8 + 8 + 8 + 8 + 8;
     } else {
-        LOGCOPY_32( &generation, &data[4 + 4 + 8 + 4 + 8 + 8 + 8 + 8 + 8 + 4] );
+        loff = 4 + 4 + 8 + 4 + 8 + 8 + 8 + 8 + 8;
     }
+    LOGCOPY_32( &lflags, &data[loff] );
+    if (lflags & DB_TXN_LOGICAL_GEN) {
+        LOGCOPY_32(&generation, &data[loff + 4]);
+    }
+
     return generation;
 }
 
@@ -525,9 +532,10 @@ u_int64_t get_timestamp_from_matchable_record(char *data)
         return get_timestamp_from_regop_record(data);
     }
 
-    if (rectype == DB___txn_ckp || (rectype == DB___txn_ckp+2000)) {
-        return get_timestamp_from_ckp_record(data);
-    }
+	if (rectype == DB___txn_ckp || (rectype == DB___txn_ckp+2000) ||
+		rectype == DB___txn_ckp_recovery || (rectype == DB___txn_ckp_recovery+2000)) {
+		return get_timestamp_from_ckp_record(data);
+	}
 
     return -1;
 }
@@ -570,7 +578,7 @@ static int tranlogColumn(
     case TRANLOG_COLUMN_MAXUTXNID: 
         if (pCur->data.data) {
             LOGCOPY_32(&rectype, pCur->data.data); 
-            if (rectype == DB___txn_ckp+2000) {
+            if (rectype == DB___txn_ckp+2000 || rectype == DB___txn_ckp_recovery+2000) {
                 LOGCOPY_64(&maxutxnid, &((char*)pCur->data.data)[4 + 4 + 8 + 8 + 8 + 8 + 4 + 4]);
                 sqlite3_result_int64(ctx, maxutxnid);
                 break;
@@ -625,7 +633,7 @@ static int tranlogColumn(
             generation = get_generation_from_regop_rowlocks_record(pCur->data.data);
         }
 
-        if (rectype == DB___txn_ckp) {
+        if (rectype == DB___txn_ckp || rectype == DB___txn_ckp_recovery) {
             generation = get_generation_from_ckp_record(pCur->data.data);
         }
 
@@ -674,9 +682,10 @@ static int tranlogColumn(
             timestamp = get_timestamp_from_regop_record(pCur->data.data);
         }
 
-        if (rectype == DB___txn_ckp || (rectype == DB___txn_ckp+2000)) {
-            timestamp = get_timestamp_from_ckp_record(pCur->data.data);
-        }
+		if (rectype == DB___txn_ckp || (rectype == DB___txn_ckp+2000) ||
+			rectype == DB___txn_ckp_recovery || (rectype == DB___txn_ckp_recovery+2000)) {
+			timestamp = get_timestamp_from_ckp_record(pCur->data.data);
+		}
 
         if (timestamp > 0) {
             sqlite3_result_int64(ctx, timestamp);

@@ -61,6 +61,8 @@
 #include "dohsql.h"
 #include "bdb_schemachange.h"
 
+#include "fdb_whitelist.h"
+
 extern int gbl_fdb_resolve_local;
 extern int gbl_fdb_allow_cross_classes;
 extern int gbl_partial_indexes;
@@ -2161,6 +2163,22 @@ static char *fdb_generate_dist_txnid()
     return r;
 }
 
+void fdb_init_disttxn(sqlclntstate *clnt)
+{
+    assert(clnt->use_2pc);
+
+    /* Preserve timestamp for retries */
+    if (!clnt->dist_timestamp) {
+        assert(!clnt->dist_txnid);
+        bbhrtime_t ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        clnt->dist_timestamp = bbhrtimens(&ts);
+    }
+    if (!clnt->dist_txnid) {
+        clnt->dist_txnid = fdb_generate_dist_txnid();
+    }
+}
+
 /**
  * Used to either open a remote transaction or cursor (fdbc==NULL-> transaction
  *begin)
@@ -2268,21 +2286,17 @@ static int _fdb_send_open_retries(sqlclntstate *clnt, fdb_t *fdb,
                     tran_flags = 0;
 
                 if (clnt->use_2pc) {
-                    /* Preserve timestamp for retries */
-                    if (!clnt->dist_timestamp) {
-                        assert(!clnt->dist_txnid);
-                        bbhrtime_t ts;
-                        clock_gettime(CLOCK_REALTIME, &ts);
-                        clnt->dist_timestamp = bbhrtimens(&ts);
-                    }
-                    if (!clnt->dist_txnid) {
-                        clnt->dist_txnid = fdb_generate_dist_txnid();
-                    }
+                    fdb_init_disttxn(clnt);
+
                     char *coordinator_dbname = strdup(gbl_dbname);
-                    char *coordinator_tier = gbl_machine_class ? strdup(gbl_machine_class) : strdup(gbl_myhostname);
+                    char *coordinator_tier = gbl_machine_class ?
+                        strdup(gbl_machine_class) : strdup(gbl_myhostname);
                     char *dist_txnid = strdup(clnt->dist_txnid);
-                    rc = fdb_send_2pc_begin(clnt, msg, trans, clnt->dbtran.mode, tran_flags, dist_txnid,
-                                            coordinator_dbname, coordinator_tier, clnt->dist_timestamp, trans->fcon.sb);
+
+                    rc = fdb_send_2pc_begin(clnt, msg, trans, clnt->dbtran.mode,
+                                            tran_flags, dist_txnid, coordinator_dbname,
+                                            coordinator_tier, clnt->dist_timestamp,
+                                            trans->fcon.sb);
                 } else {
                     rc = fdb_send_begin(clnt, msg, trans, clnt->dbtran.mode, tran_flags, trans->fcon.sb);
                 }
@@ -2492,7 +2506,7 @@ static fdb_cursor_if_t *_cursor_open_remote_cdb2api(sqlclntstate *clnt,
     if (rootpage == 1) {
         rc = cdb2_run_statement(fdbc->fcon.api.hndl, "SET REMSQL_SCHEMA 1");
         if (rc) {
-            logmsg(LOGMSG_ERROR, "%s: %s:%s failed to set remsql_scheam rc %d\n",
+            logmsg(LOGMSG_ERROR, "%s: %s:%s failed to set remsql_schema rc %d\n",
                    __func__, fdb->dbname, class, rc);
             goto error;
         }
@@ -2505,6 +2519,51 @@ error:
     free(fdbc_if);
     fdbc_if = NULL;
     goto done;
+}
+
+/**
+ * SET the options for a distributed 2pc transaction 
+ *
+ */
+int fdb_2pc_set(sqlclntstate *clnt, fdb_t *fdb, cdb2_hndl_tp *hndl)
+{
+    char str[256];
+    char *class = gbl_machine_class ? gbl_machine_class : gbl_myhostname;
+    int rc;
+
+    snprintf(str, sizeof(str), "SET REMTRAN_NAME %s", gbl_dbname);
+    rc = cdb2_run_statement(hndl, str);
+    if (rc) {
+        logmsg(LOGMSG_ERROR, "%s: %s:%s failed to set remtran_name rc %d\n",
+                __func__, fdb->dbname, class, rc);
+        return -1;
+    }
+
+    snprintf(str, sizeof(str), "SET REMTRAN_TIER %s", class);
+    rc = cdb2_run_statement(hndl, str);
+    if (rc) {
+        logmsg(LOGMSG_ERROR, "%s: %s:%s failed to set remtran_tier rc %d\n",
+                __func__, fdb->dbname, class, rc);
+        return -1;
+    }
+
+    snprintf(str, sizeof(str), "SET REMTRAN_TXNID %s", clnt->dist_txnid);
+    rc = cdb2_run_statement(hndl, str);
+    if (rc) {
+        logmsg(LOGMSG_ERROR, "%s: %s:%s failed to set remtran_txnid rc %d\n",
+                __func__, fdb->dbname, class, rc);
+        return -1;
+    }
+
+    snprintf(str, sizeof(str), "SET REMTRAN_TSTAMP %lu", clnt->dist_timestamp);
+    rc = cdb2_run_statement(hndl, str);
+    if (rc) {
+        logmsg(LOGMSG_ERROR, "%s: %s:%s failed to set remtran_tstamp rc %d\n",
+                __func__, fdb->dbname, class, rc);
+        return -1;
+    }
+
+    return 0;
 }
 
 static fdb_cursor_if_t *_cursor_open_remote(sqlclntstate *clnt,
@@ -4209,7 +4268,13 @@ int fdb_trans_commit(sqlclntstate *clnt, enum trans_clntcomm sideeffects)
             continue;
 
         if (tran->is_cdb2api) {
-            rc = cdb2_run_statement(tran->fcon.hndl, "commit");
+            if (tran->nwrites) {
+                /* handle is only created upon first remote write to this fdb */
+                assert(tran->fcon.hndl);
+                rc = cdb2_run_statement(tran->fcon.hndl, "commit");
+            } else {
+                rc = 0;
+            }
         } else {
             rc = fdb_send_commit(msg, tran, clnt->dbtran.mode, tran->fcon.sb);
         }
@@ -4324,7 +4389,13 @@ int fdb_trans_rollback(sqlclntstate *clnt)
     LISTC_FOR_EACH(&dtran->fdb_trans, tran, lnk)
     {
         if (tran->is_cdb2api) {
-            rc = cdb2_run_statement(tran->fcon.hndl, "rollback");
+            if (tran->nwrites) {
+                /* handle is only created upon first remote write to this fdb */
+                assert(tran->fcon.hndl);
+                rc = cdb2_run_statement(tran->fcon.hndl, "rollback");
+            } else {
+                rc = 0;
+            }
         } else {
             rc = fdb_send_rollback(msg, tran, clnt->dbtran.mode, tran->fcon.sb);
         }
@@ -5525,6 +5596,15 @@ static int _fdb_cdb2api_send_set(fdb_cursor_t *fdbc)
         return FDB_ERR_GENERIC;
     }
 
+    snprintf(str, sizeof(str), "SET REMSQL_SRCDBNAME %s", thedb->envname);
+
+    rc = cdb2_run_statement(hndl, str);
+    if (rc) {
+        logmsg(LOGMSG_ERROR, "%s failed to set source dbname rc %d\n",
+               __func__, rc);
+        return FDB_ERR_GENERIC;
+    }
+
     return FDB_NOERR;
 }
 
@@ -5582,6 +5662,7 @@ static int _fdb_client_set_options(sqlclntstate *clnt,
 const char *err_precdb2api = "Invalid set command 'REMSQL";
 const char *err_cdb2apiold = "need protocol ";
 const char *err_tableschemaold = "need table schema ";
+const char *err_pre2pc = "Invalid set command 'REMTRAN";
 
 static int _fdb_run_sql(BtCursor *pCur, char *sql)
 {
@@ -5801,7 +5882,7 @@ version_retry:
 #define GET_INT(val) \
     do { \
         sqlstr = skipws(sqlstr); \
-        if (!sqlstr) { \
+        if (!*sqlstr) { \
             snprintf(err, errlen, \
                      "missing setting value"); \
             return -1; \
@@ -5809,8 +5890,43 @@ version_retry:
         if (((val) = atoi(sqlstr)) < 0) { \
             snprintf(err, errlen, \
                      "invalid setting value %s", sqlstr); \
+            return -1; \
         } \
     } while (0);
+
+#define GET_CSTR(str, name, dstr, dstrl) \
+    do { \
+        char *ptr = (str); \
+        while (*ptr && ptr[0] != ' ') \
+            ptr++; \
+        int len = ptr - (str) + 1; \
+        if (len > (dstrl)) { \
+            snprintf(err, errlen, "%s too long \"%s\"", (name), (str)); \
+            return -1; \
+        } \
+        \
+        bzero((dstr), (dstrl)); \
+        memcpy((dstr), (str), len-1); \
+        \
+        (str) = ptr;\
+    } while (0);
+
+#define GET_PCSTR(str, name, dstr) \
+    do { \
+        char *ptr = (str); \
+        while (*ptr && ptr[0] != ' ') \
+            ptr++; \
+        int len = ptr - (str) + 1; \
+        (dstr) = calloc(1, len); \
+        if (!(dstr)) { \
+            snprintf(err, errlen, "err malloc"); \
+            return -1; \
+        } \
+        memcpy((dstr), (str), len-1); \
+        \
+        (str) = ptr;\
+    } while (0);
+
 
 int process_fdb_set_cdb2api(sqlclntstate *clnt, char *sqlstr, char *err,
                             int errlen)
@@ -5852,24 +5968,13 @@ int process_fdb_set_cdb2api(sqlclntstate *clnt, char *sqlstr, char *err,
     } else if (strncasecmp(sqlstr, "table ", 6) == 0) {
         sqlstr += 5;
         sqlstr = skipws(sqlstr);
-        if (!sqlstr) {
+        if (!*sqlstr) {
             snprintf(err, errlen, "missing table name");
             return -1;
         }
-        char *ptr = sqlstr;
-        while (*ptr && ptr[0] != ' ')
-            ptr++;
-        int tbllen = ptr - sqlstr + 1;
-        if (tbllen > sizeof(clnt->remsql_set.tablename)) {
-            snprintf(err, errlen, "table name too long \"%s\"",
-                     sqlstr);
-            return -1;
-        }
 
-        memcpy(clnt->remsql_set.tablename, sqlstr, tbllen-1);
-        clnt->remsql_set.tablename[sizeof(clnt->remsql_set.tablename) - 1] = '\0';
+        GET_CSTR(sqlstr, "tablename", clnt->remsql_set.tablename, sizeof(clnt->remsql_set.tablename));
 
-        sqlstr =  ptr;
         if (sqlstr[0] != ' ') {
             snprintf(err, errlen, "missing table version");
             return -1;
@@ -5886,7 +5991,7 @@ int process_fdb_set_cdb2api(sqlclntstate *clnt, char *sqlstr, char *err,
     } else if (strncasecmp(sqlstr, "cursor ", 7) == 0) {
         sqlstr += 6;
         sqlstr = skipws(sqlstr);
-        if (!sqlstr) {
+        if (!*sqlstr) {
             snprintf(err, errlen, "missing cursor uuid");
             return -1;
         }
@@ -5894,10 +5999,84 @@ int process_fdb_set_cdb2api(sqlclntstate *clnt, char *sqlstr, char *err,
             snprintf(err, errlen, "failed to parse uuid");
             return -1;
         }
+    } else if (strncasecmp(sqlstr, "srcdbname ", 10) == 0) {
+        sqlstr += 9;
+        sqlstr = skipws(sqlstr);
+        if (!*sqlstr) {
+            snprintf(err, errlen, "missing src dbname");
+            return -1;
+        }
+
+        GET_PCSTR(sqlstr, "srcdbname", clnt->remsql_set.srcdbname);
+
+        if (!fdb_is_dbname_in_whitelist(clnt->remsql_set.srcdbname)) {
+            snprintf(err, errlen, "Access Error: db not allowed to connect");
+            return -1;
+        }
     } else {
         snprintf(err, errlen, "unknown setting \"%s\"", sqlstr);
         return -1;
     }
+    return 0;
+}
+
+int process_fdb_set_cdb2api_2pc(sqlclntstate *clnt, char *sqlstr, char *err,
+                                int errlen)
+{
+    if (sqlstr)
+        sqlstr = skipws(sqlstr);
+
+    if (!sqlstr) {
+        snprintf(err, errlen, "missing remsql setting");
+        return -1;
+    }
+
+    if (gbl_fdb_emulate_old) {
+        /* we want to emulate a pre-cdb2api failure to parse remsql SET
+         * options; just return error here, do not set err
+         */
+        return -1;
+    }
+
+    if (strncasecmp(sqlstr, "name ", 5) == 0) {
+        sqlstr += 5;
+        if (!sqlstr[0]) {
+            snprintf(err, errlen, "missing coordinator dbname");
+            return -1;
+        }
+        clnt->coordinator_dbname = strdup(sqlstr);
+    } else if (strncasecmp(sqlstr, "tier ", 5) == 0) {
+        sqlstr += 5;
+        if (!sqlstr[0]) {
+            snprintf(err, errlen, "missing coordinator tier");
+            return -1;
+        }
+        clnt->coordinator_tier= strdup(sqlstr);
+    } else if (strncasecmp(sqlstr, "txnid ", 6) == 0) {
+        sqlstr += 6;
+        if (!sqlstr[0]) {
+            snprintf(err, errlen, "missing dist txn id");
+            return -1;
+        }
+        clnt->dist_txnid = strdup(sqlstr);
+    } else if (strncasecmp(sqlstr, "tstamp ", 7) == 0) {
+        sqlstr += 7;
+        if (!sqlstr[0]) {
+            snprintf(err, errlen, "missing dist timestamp");
+            return -1;
+        }
+        clnt->dist_timestamp = atoll(sqlstr);
+    } else {
+        snprintf(err, errlen, "failed to parse 2pc option %s", sqlstr);
+        return -1;
+    }
+
+    if (clnt->coordinator_dbname && clnt->coordinator_tier && clnt->dist_txnid &&
+        clnt->dist_timestamp) {
+        clnt->use_2pc = 1;
+        clnt->is_participant = 1;
+    }
+
     return 0;
 }
 

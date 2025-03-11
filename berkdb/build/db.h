@@ -207,6 +207,7 @@ struct txn_properties;
 #define	DB_TXN_NOT_DURABLE    0x0000200	/* Do not log changes. */
 #define	DB_USE_ENVIRON	      0x0000400	/* Use the environment. */
 #define	DB_USE_ENVIRON_ROOT   0x0000800	/* Use the environment if root. */
+#define DB_RECOVERY_CKP       0x0001000 /* Do recovery checkpoint */
 
 /*
  * Common flags --
@@ -2590,7 +2591,7 @@ struct __db_env {
 	int  (*rep_elect) __P((DB_ENV *, int, int, u_int32_t, u_int32_t *, int *, char **));
 	int  (*rep_flush) __P((DB_ENV *));
 	int  (*rep_process_message) __P((DB_ENV *, DBT *, DBT *,
-		char **, DB_LSN *, uint32_t *, int));
+		char **, DB_LSN *, uint32_t *, uint32_t *, char **, int));
 	int  (*rep_verify_will_recover) __P((DB_ENV *, DBT *, DBT *));
 	int  (*rep_truncate_repdb) __P((DB_ENV *));
 	int  (*rep_start) __P((DB_ENV *, DBT *, u_int32_t, u_int32_t));

@@ -102,6 +102,7 @@ enum {
     BDB_CALLBACK_SERIALCHECK,
     BDB_CALLBACK_ADMIN_APPSOCK,
     BDB_CALLBACK_SYNCMODE,
+    BDB_CALLBACK_NODEUP_DRTEST
 };
 
 enum { BDB_REPFAIL_NET, BDB_REPFAIL_TIMEOUT, BDB_REPFAIL_RMTBDB };
@@ -400,6 +401,9 @@ typedef void (*UNDOSHADOWFP)(struct bdb_osql_log *);
 
 /* Callback to return sync type */
 typedef int (*SYNCMODE)(bdb_state_type *);
+
+/* Callback to dr-test aware rtcpu */
+typedef int (*NODEUP_DRTEST)(bdb_state_type *, const char *hode, int *isdrtest);
 
 typedef int (*BDB_CALLBACK_FP)();
 bdb_callback_type *bdb_callback_create(void);
@@ -1349,8 +1353,6 @@ int bdb_fetch_last_key_tran(bdb_state_type *bdb_state, tran_type *tran,
 
 int bdb_rowlock(bdb_state_type *bdb_state, tran_type *tran,
                 unsigned long long genid, int exclusive, int *bdberr);
-
-int bdb_get_low_headroom_count(bdb_state_type *bdb_state);
 
 enum { BDB_LOCK_READ, BDB_LOCK_WRITE };
 

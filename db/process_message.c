@@ -616,6 +616,7 @@ static pthread_mutex_t exiting_lock = PTHREAD_MUTEX_INITIALIZER;
 void *clean_exit_thd(void *unused)
 {
     comdb2_name_thread(__func__);
+    thrman_register(THRTYPE_CLEANEXIT);
     if (!gbl_ready)
         return NULL;
 
@@ -628,7 +629,6 @@ void *clean_exit_thd(void *unused)
     Pthread_mutex_unlock(&exiting_lock);
 
     bdb_thread_event(thedb->bdb_env, BDBTHR_EVENT_START_RDWR);
-    thrman_register(THRTYPE_CLEANEXIT);
     thread_started("clean_exit");
 
     clean_exit();
@@ -2973,6 +2973,60 @@ clipper_usage:
         }
         logmsg(LOGMSG_WARN, "machine_cache requires find, add or dump\n");
         return -1;
+
+    } else if (tokcmp(tok, ltok, "fakedr") == 0) {
+        /* Message-traps to verify behavior for drtesting  */
+        /*
+         * fakedr add <node>
+         * fakedr del <node>
+         * fakedr dump
+         */
+        tok = segtok(line, lline, &st, &ltok);
+
+        /* Add */
+        if (tokcmp(tok, ltok, "add") == 0) {
+
+            /* Host */
+            tok = segtok(line, lline, &st, &ltok);
+            if (!ltok) {
+                logmsg(LOGMSG_WARN, "machine_cluster add requires host & cluster\n");
+                return -1;
+            }
+            char *host = alloca(ltok + 1);
+            tokcpy(tok, ltok, host);
+
+            void add_fake_drtest(const char *host);
+            add_fake_drtest(host);
+            return 0;
+        }
+
+        /* Del */
+        if (tokcmp(tok, ltok, "del") == 0) {
+
+            /* Host */
+            tok = segtok(line, lline, &st, &ltok);
+            if (!ltok) {
+                logmsg(LOGMSG_WARN, "machine_cluster add requires host & cluster\n");
+                return -1;
+            }
+            char *host = alloca(ltok + 1);
+            tokcpy(tok, ltok, host);
+
+            void del_fake_drtest(const char *host);
+            del_fake_drtest(host);
+            return 0;
+        }
+
+        /* Dump */
+        if (tokcmp(tok, ltok, "dump") == 0) {
+            void dump_fake_drtest();
+            dump_fake_drtest();
+            return 0;
+        }
+
+        logmsg(LOGMSG_WARN, "fakedr requires add, del or dump\n");
+        return -1;
+
     } else if (tokcmp(tok, ltok, "machine_cluster") == 0) {
 
         /* machine_cluster add <machine-name> <cluster-name>
