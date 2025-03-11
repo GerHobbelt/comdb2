@@ -16,6 +16,9 @@
 
 #ifndef _DB_TUNABLES_H
 #define _DB_TUNABLES_H
+
+#include <sc_version.h>
+#define STR(x) #x
 /*
   We need this guard to avoid accidental inclusion of this file
   at multiple places.
@@ -2351,9 +2354,15 @@ REGISTER_TUNABLE("sqlite_use_temptable_for_rowset",
                  TUNABLE_BOOLEAN, &gbl_sqlite_use_temptable_for_rowset, 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("max_identity_cache", "Max cache size of externalauth identities (Default: 500)",
-                 TUNABLE_INTEGER, &gbl_identity_cache_max, 0, NULL, NULL, NULL, NULL);
+                 TUNABLE_INTEGER, &gbl_identity_cache_max, READONLY, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE("iam_usermetric_verbosity", "IAM user metric verbosity [Default: 1 (low)]", TUNABLE_INTEGER,
+REGISTER_TUNABLE("max_authorization_cache", "Max cache size of authorized identities (Default: 2000)",
+                 TUNABLE_INTEGER, &gbl_authorization_cache_max, READONLY, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("authorization_cache_ageout", "Max age of authorization cache (Default: 600 seconds)",
+                 TUNABLE_INTEGER, &gbl_authorization_cache_ageout, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("iam_usermetric_verbosity", "IAM user metric verbosity [Default: 0 (off)]", TUNABLE_INTEGER,
                  &gbl_iam_verbosity, 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("track_weighted_queue_metrics_separately",
@@ -2385,6 +2394,10 @@ REGISTER_TUNABLE("wal_osync", "Open WAL files using the O_SYNC flag (Default: of
                  NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sc_headroom", "Percentage threshold for low headroom calculation. (Default: 10)", TUNABLE_DOUBLE,
                  &gbl_sc_headroom, INTERNAL | SIGNED, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("sc_protobuf", "Enable protobuf schema change object (Default: on)", TUNABLE_BOOLEAN, &gbl_sc_protobuf,
+                 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("sc_current_version", "Current schema-change version (Default: " STR(SC_VERSION) ")", TUNABLE_INTEGER,
+                 &gbl_sc_current_version, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("fdb_incoherence_percentage", "Generate random incoherent errors in remsql", TUNABLE_INTEGER,
                  &gbl_fdb_incoherence_percentage, INTERNAL, NULL, percent_verify, NULL, NULL);
 REGISTER_TUNABLE("fdb_socket_timeout_ms", "Timeout ms for fdb communications.  (Default: 10000)", TUNABLE_INTEGER,
@@ -2469,4 +2482,5 @@ REGISTER_TUNABLE("sc_status_max_rows", "Max number of rows returned in comdb2_sc
                  TUNABLE_INTEGER, &gbl_sc_status_max_rows, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("rep_process_pstack_time", "pstack the server if rep_process runs longer than time specified in secs (Default: 30s)",
                  TUNABLE_INTEGER, &gbl_rep_process_pstack_time, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("sql_recover_time", "Number of msec before checking if SQL has waiters. 0 will disable. (Default: 10ms)", TUNABLE_INTEGER, &gbl_sql_recover_time, 0, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

@@ -445,9 +445,6 @@ struct tran_tag {
     /* Tables that this tran touches (for logical redo sc) */
     hash_t *dirty_table_hash;
 
-    /* cache the versions of dta files to catch schema changes and fastinits */
-    int table_version_cache_sz;
-    unsigned long long *table_version_cache;
     bdb_state_type *parent_state;
 
     /* Send the master periodic 'acks' after this many physical commits */
@@ -585,8 +582,7 @@ struct bdb_cursor_impl_tag {
 
     /* read committed/snapshot/serializable mode support */
     tmpcursor_t *skip; /* skip list; don't touch this, use bdb_osql please */
-    char
-        *lastkey; /* set after a row is consumed from real data (see merging) */
+    char *lastkey; /* set after a row is consumed from real data (see merging) */
     int lastkeylen;
     int laststripe;
     int lastpage;
@@ -766,6 +762,12 @@ typedef struct {
     int should_reject_timestamp;
     int should_reject;
 } repinfo_type;
+
+typedef struct table_version_cache
+{
+    int sz;
+    unsigned long long *entries;
+} table_version_cache_t;
 
 struct hostinfo
 {
@@ -1843,8 +1845,8 @@ int bdb_lite_list_records(bdb_state_type *bdb_state,
                                           int *bdberr),
                           int *bdberr);
 
-int bdb_osql_cache_table_versions(bdb_state_type *bdb_state, tran_type *tran,
-                                  int trak, int *bdberr);
+int bdb_osql_cache_table_versions(bdb_state_type *bdb_state, table_version_cache *cache,
+                                  int *bdberr);
 int bdb_temp_table_destroy_lru(struct temp_table *tbl,
                                bdb_state_type *bdb_state, int *last,
                                int *bdberr);

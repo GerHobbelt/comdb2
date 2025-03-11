@@ -260,15 +260,11 @@ typedef struct fdb fdb_t;
 
 typedef struct {
     enum transaction_level mode; /* TRANLEVEL_SOSQL, TRANLEVEL_RECOM, ... */
-
-    struct cursor_tran *
-        cursor_tran; /* id used to open cursors sharing same deadlock identity*/
-    tran_type *
-        shadow_tran; /* used to keep local changes to btree, uncommitted yet */
+    struct cursor_tran *cursor_tran; /* id used to open cursors sharing same deadlock identity*/
+    tran_type *shadow_tran; /* used to keep local changes to btree, uncommitted yet */
     tran_type *logical_tran; /* used by rowlocks ? */
 
-    fdb_distributed_tran_t *
-        dtran; /* remote transactions, contain each remote cluster tran */
+    fdb_distributed_tran_t *dtran; /* remote transactions, contain each remote cluster tran */
     int rollbacked; /* mark this to catch out-of-order errors */
 
     sqlite3_stmt *pStmt; /* if sql is in progress, points at the engine */
@@ -279,6 +275,9 @@ typedef struct {
     int maxchunksize;     /* multi-transaction bulk mode */
     int crtchunksize;     /* how many rows are processed already */
     int nchunks;          /* number of chunks. 0 for a non-chunked transaction. */
+
+    /* cache the versions of dta files to catch schema changes and fastinits */
+    table_version_cache *table_version_cache;
 } dbtran_type;
 typedef dbtran_type trans_t;
 
@@ -750,6 +749,7 @@ struct sqlclntstate {
 
     int using_case_insensitive_like;
     int deadlock_recovered;
+    struct timeval last_sql_recover_time;
 
     /* lua stored procedure */
     struct stored_proc *sp;
@@ -1075,6 +1075,14 @@ typedef enum {
     CURSORCLASS_REMOTE,
 } cursorclass_type;
 
+struct rd_blob_buffer {
+    int capacity;
+    int length;
+    int flags;
+    int n;
+    char *z;
+    genid_t genid;
+};
 
 struct BtCursor {
     /* direct pointers to stuff -- avoids thread local lookup */
@@ -1090,17 +1098,15 @@ struct BtCursor {
     /* various buffers: */
     uint8_t writeTransaction; /* save tran type during cursor open */
     void *ondisk_buf;         /* ondisk data */
-    void *ondisk_key; /* ondisk key. this is effectively also the pointer into
-                         the index */
-    blob_buffer_t ondisk_blobs[MAXBLOBS]; /* ondisk blobs */
+    void *ondisk_key; /* ondisk key. this is effectively also the pointer into the index */
+    struct rd_blob_buffer *rd_blob_buffers;
+    blob_buffer_t wr_blob_buffers[MAXBLOBS];
 
     void *lastkey; /* last key: swap with ondisk_key for subsequent lookups */
     void *fndkey;  /* this key is actually found */
 
-    int eof;   /* we reached the end of an index, but the current entry still
-                  contains valid data */
-    int empty; /* there are no entries in the db - no results to return for any
-                  query */
+    unsigned eof : 1;   /* we reached the end of an index, but the current entry still contains valid data */
+    unsigned empty : 1; /* there are no entries in the db - no results to return for any query */
     LINKC_T(BtCursor) lnk;
 
     /* these are sqlite format buffers */
@@ -1111,8 +1117,6 @@ struct BtCursor {
 
     int dtabuf_alloc;
     int keybuf_alloc;
-    int ondisk_dtabuf_alloc;
-    int ondisk_keybuf_alloc;
 
     struct session_tbl *session_tbl;
     int tblnum;
@@ -1147,11 +1151,9 @@ struct BtCursor {
 
     int numblobs;
 
-    struct schema *sc; /* points to the schema for the underlying table for
-                          this cursor */
+    struct schema *sc; /* points to the schema for the underlying table for this cursor */
 
-    cursorclass_type
-        cursor_class; /* TEMPTABLE, SQLITEMASTER, TABLE, INDEX, STAT2 */
+    cursorclass_type cursor_class; /* TEMPTABLE, SQLITEMASTER, TABLE, INDEX, STAT2 */
 
     void *shadtbl; /* fast pointer to shadows, used during transaction */
 
@@ -1180,8 +1182,7 @@ struct BtCursor {
     double blob_cost;
 
     int nCookFields;
-    uint8_t
-        is_recording; /* set for indexes; will store deep copies of data&blobs
+    uint8_t is_recording; /* set for indexes; will store deep copies of data&blobs
                                to prevent verify errors */
     uint8_t is_sampled_idx; /* set to 1 if this is a sampled (previously
                                misnamed compressed) index */
@@ -1191,8 +1192,6 @@ struct BtCursor {
 
     blob_status_t blob_descriptor;
     int have_blob_descriptor;
-
-    unsigned long long last_cached_genid;
 
     /* remotes */
     struct fdb_cursor_if *fdbc;

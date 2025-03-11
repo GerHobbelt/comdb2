@@ -442,6 +442,35 @@ Parameters:
 |*typelen*| input | The length of the data type of the array which is being passed in | This should be the sizeof(valueaddr's original type), so 4 if it's a int32, 8 for int64... |
 
 
+### cdb2_bind_array_index
+```
+int cdb2_bind_array_index(cdb2_hndl_tp *hndl, int index, cdb2_coltype type, const void *varaddr, size_t count, size_t typelen)
+
+```
+
+Description:
+
+This routine is used to bind arrays by index in sql statement. The index starts from 1, and increases for every new parameter in the statement. This version of cdb2_bind_* is faster than cdb2_bind_array.
+
+For example:
+
+```c
+int arr[10] = {1,2,3,4...};
+cdb2_bind_array_index(hndl, 1, CDB2_INTEGER, arr, 10, sizeof(int));
+cdb2_run_statement(db, "SELECT * FROM a WHERE i IN CARRAY(?)");
+```
+
+Parameters:
+
+|Name|Type|Description|Notes|
+|---|---|---|--|
+|*hndl*| input | cdb2 handle | A previously allocated CDB2 handle |
+| *index* | input | The index of replaceable param | The value associated with this pointer should not change between bind and [cdb2_run_statement](#cdb2_run_statement) |
+|*type*| input | The type of replaceable param | |
+|*valueaddr*| input | The value pointer of replaceable param | The value associated with this pointer should not change between bind and [cdb2_run_statement](#cdb2_run_statement), and for numeric types must be signed. |
+|*count*| input | The count of items in the array | |
+|*typelen*| input | The length of the data type of the array which is being passed in | This should be the sizeof(valueaddr's original type), so 4 if it's a int32, 8 for int64... |
+
 ### cdb2_get_effects
 ```
 int cdb2_get_effects(cdb2_hndl_tp *hndl, cdb2_effects_tp *effects);
@@ -631,25 +660,25 @@ where `cb_hndl` is the handle upon which the event is fired.
 
 Besides the user argument, one can request additional arguments by setting `argc` to the number of the arguments, followed by the argument types. The arguments will be passed to `cb` in `argv`. The table below lists the argument types.
 
-|Event Type|`CDB2_HOSTNAME`|`CDB2_PORT`|`CDB2_SQL`|`CDB2_RETURN_VALUE`|`CDB2_FINGERPRINT`|
-|---|---|---|---|---|---|
-| `CDB2_BEFORE_CONNECT` | The hostname to connect to | The port to connect to | N/A | N/A | N/A |
-| `CDB2_AFTER_CONNECT` | The hostname to connect to | The port to connect to | N/A | file descriptor | N/A |
-| `CDB2_BEFORE_PMUX` | The server hostname | The pmux port | N/A | N/A | N/A |
-| `CDB2_AFTER_PMUX` | The server hostname | The pmux port | N/A | The database port | N/A |
-| `CDB2_BEFORE_DBINFO` | The server hostname  | The database port | N/A | N/A | N/A |
-| `CDB2_AFTER_DBINFO` | The server hostname | The database port | N/A | 0 on success; Non-zero on failure | N/A |
-| `CDB2_BEFORE_SEND_QUERY` | The server hostname | The database port | The SQL query | N/A | N/A |
-| `CDB2_AFTER_SEND_QUERY` | The server hostname | The database port | The SQL query | 0 on success; Non-zero on failure | N/A |
-| `CDB2_BEFORE_READ_RECORD` | The server hostname | The database port | N/A | N/A | N/A |
-| `CDB2_AFTER_READ_RECORD` | The server hostname | The database port | N/A | 0 on success; Non-zero on failure | N/A |
-| `CDB2_AT_ENTER_RUN_STATEMENT` | The server hostname | The database port | The SQL query | See [cdb2api errors](#cdb2api-errors) | N/A |
-| `CDB2_AT_EXIT_RUN_STATEMENT` | The server hostname | The database port | The SQL query | See [cdb2api errors](#cdb2api-errors) | Fingerprint of the SQL query |
-| `CDB2_AT_ENTER_NEXT_RECORD` | The server hostname | The database port | N/A | See [cdb2api errors](#cdb2api-errors) | Fingerprint of the SQL query |
-| `CDB2_AT_EXIT_NEXT_RECORD` | The server hostname | The database port | N/A | See [cdb2api errors](#cdb2api-errors) | Fingerprint of the SQL query |
-| `CDB2_AT_DISCOVERY` | N/A | N/A | N/A | N/A | N/A |
-| `CDB2_AT_OPEN` | N/A | N/A | N/A | See [cdb2api errors](#cdb2api-errors) | N/A |
-| `CDB2_AT_CLOSE` | N/A | N/A | N/A | See [cdb2api errors](#cdb2api-errors) | N/A |
+|Event Type|`CDB2_HOSTNAME`|`CDB2_PORT`|`CDB2_SQL`|`CDB2_RETURN_VALUE`|`CDB2_FINGERPRINT`|`CDB2_DBTYPE`|
+|---|---|---|---|---|---|---|
+| `CDB2_BEFORE_CONNECT` | The hostname to connect to | The port to connect to | N/A | N/A | N/A | Resolved dbtype |
+| `CDB2_AFTER_CONNECT` | The hostname to connect to | The port to connect to | N/A | file descriptor | N/A | Resolved dbtype |
+| `CDB2_BEFORE_PMUX` | The server hostname | The pmux port | N/A | N/A | N/A | Resolved dbtype |
+| `CDB2_AFTER_PMUX` | The server hostname | The pmux port | N/A | The database port | N/A | Resolved dbtype |
+| `CDB2_BEFORE_DBINFO` | The server hostname  | The database port | N/A | N/A | N/A | Resolved dbtype |
+| `CDB2_AFTER_DBINFO` | The server hostname | The database port | N/A | 0 on success; Non-zero on failure | N/A | Resolved dbtype |
+| `CDB2_BEFORE_SEND_QUERY` | The server hostname | The database port | The SQL query | N/A | N/A | Resolved dbtype |
+| `CDB2_AFTER_SEND_QUERY` | The server hostname | The database port | The SQL query | 0 on success; Non-zero on failure | N/A | Resolved dbtype |
+| `CDB2_BEFORE_READ_RECORD` | The server hostname | The database port | N/A | N/A | N/A | Resolved dbtype |
+| `CDB2_AFTER_READ_RECORD` | The server hostname | The database port | N/A | 0 on success; Non-zero on failure | N/A | Resolved dbtype |
+| `CDB2_AT_ENTER_RUN_STATEMENT` | The server hostname | The database port | The SQL query | See [cdb2api errors](#cdb2api-errors) | N/A | Resolved dbtype |
+| `CDB2_AT_EXIT_RUN_STATEMENT` | The server hostname | The database port | The SQL query | See [cdb2api errors](#cdb2api-errors) | Fingerprint of the SQL query | Resolved dbtype |
+| `CDB2_AT_ENTER_NEXT_RECORD` | The server hostname | The database port | N/A | See [cdb2api errors](#cdb2api-errors) | Fingerprint of the SQL query | Resolved dbtype |
+| `CDB2_AT_EXIT_NEXT_RECORD` | The server hostname | The database port | N/A | See [cdb2api errors](#cdb2api-errors) | Fingerprint of the SQL query | Resolved dbtype |
+| `CDB2_AT_DISCOVERY` | N/A | N/A | N/A | N/A | N/A | Unresolved dbtype |
+| `CDB2_AT_OPEN` | N/A | N/A | N/A | See [cdb2api errors](#cdb2api-errors) | N/A | Resolved dbtype |
+| `CDB2_AT_CLOSE` | N/A | N/A | N/A | See [cdb2api errors](#cdb2api-errors) | N/A | Resolved dbtype |
 
 Return Value:
 

@@ -244,7 +244,8 @@ int cdb2_bind_param(cdb2_hndl_tp *hndl, const char *name, int type,
                     const void *varaddr, int length);
 int cdb2_bind_index(cdb2_hndl_tp *hndl, int index, int type,
                     const void *varaddr, int length);
-int cdb2_bind_array(cdb2_hndl_tp *, const char *, cdb2_coltype, const void *, size_t count, size_t typelen);
+int cdb2_bind_array(cdb2_hndl_tp *, const char *, cdb2_coltype, const void *, size_t, size_t);
+int cdb2_bind_array_index(cdb2_hndl_tp *, int, cdb2_coltype, const void *, size_t, size_t);
 int cdb2_clearbindings(cdb2_hndl_tp *hndl);
 
 const char *cdb2_dbname(cdb2_hndl_tp *hndl);
@@ -311,7 +312,8 @@ typedef enum cdb2_event_arg {
     CDB2_SQL,
     CDB2_RETURN_VALUE,
     CDB2_QUERY_STATE,
-    CDB2_FINGERPRINT
+    CDB2_FINGERPRINT,
+    CDB2_DBTYPE
 } cdb2_event_arg;
 
 typedef struct cdb2_event cdb2_event;

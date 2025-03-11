@@ -447,6 +447,8 @@ static char *legacy_options[] = {
     "setattr max_sql_idle_time 864000",
     "retrieve_gen_from_ckp 0",
     "recovery_ckp 0",
+    "sc_protobuf 0",
+    "sc_current_version 3",
 };
 // clang-format on
 
@@ -1503,7 +1505,7 @@ static int read_lrl_option(struct dbenv *dbenv, char *line,
         char *queue = alloca(ltok + 1);
         tokcpy(tok, ltok, queue);
         char *bdbq = alloca(ltok + 4);
-        sprintf(bdbq, "__q%s", queue);
+        sprintf(bdbq, "%s%s", Q_TAG, queue);
 
         if ((tok = segtok(line, len, &st, &ltok)) == NULL || ltok == 0) {
             logmsg(LOGMSG_ERROR, "Expected dump-queue filename\n");
@@ -1529,7 +1531,7 @@ static int read_lrl_option(struct dbenv *dbenv, char *line,
         char *queue = alloca(ltok + 1);
         tokcpy(tok, ltok, queue);
         char *bdbq = alloca(ltok + 4);
-        sprintf(bdbq, "__q%s", queue);
+        sprintf(bdbq, "%s%s", Q_TAG, queue);
 
         if ((tok = segtok(line, len, &st, &ltok)) == NULL || ltok <= 0) {
             logmsg(LOGMSG_ERROR, "Expected kafka topic\n");

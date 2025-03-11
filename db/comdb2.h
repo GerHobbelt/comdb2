@@ -1618,6 +1618,8 @@ extern int gbl_uses_externalauth;
 extern int gbl_uses_externalauth_connect;
 extern int gbl_externalauth_warn;
 extern int gbl_identity_cache_max;
+extern int gbl_authorization_cache_max;
+extern int gbl_authorization_cache_ageout;
 extern int gbl_iam_verbosity;
 extern char* gbl_foreign_metadb;
 extern char* gbl_foreign_metadb_class;
@@ -3603,8 +3605,8 @@ int sc_timepart_truncate_table(const char *tableName, struct errstat *err,
 // future refactoring
 
 int compare_tag(const char *table, const char *tag, FILE *out);
-int compare_tag_int(struct schema *old, struct schema *new, FILE *out,
-                    int strict);
+int compare_tag_int(struct schema *old, struct schema *new, FILE *out, int strict, sc_tag_change_subtype *);
+const char *sc_tag_change_subtype_text(sc_tag_change_subtype);
 int cmp_index_int(struct schema *oldix, struct schema *newix, char *descr,
                   size_t descrlen);
 int get_dbtable_idx_by_name(const char *tablename);
@@ -3708,6 +3710,9 @@ extern int gbl_throttle_txn_chunks_msec;
 extern int gbl_sql_release_locks_on_slow_reader;
 extern int gbl_fail_client_write_lock;
 extern int gbl_server_admin_mode;
+
+extern int gbl_epoch_time;
+extern int gbl_watchdog_disable_at_start;
 
 void csc2_free_all(void);
 

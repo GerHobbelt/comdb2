@@ -21,24 +21,21 @@
 #define IS_ODH_READY(x) (!!(((x)->odhind) & OSQL_BLOB_ODH_BIT))
 #define OSQL_BLOB_FILLER_LENGTH (-2)
 
+#include <inttypes.h>
+
 /* Used for collecting blob data before a keyless add/upd/del.
  * An array of these also supplements */
 typedef struct blob_buffer {
     int exists; /* to differentiate 0 length from null */
-
+    int length;
     char *data;
-    size_t length;
 
     /* collected has a double life.  on the user side, it is used to
      * track how much blob we've collected from the transaction data.
      * on the server side, it should be non-zero even for a null blob
      * so we know that it's been through the type system (helps us tell
      * which blobs to update on updates) */
-    size_t collected;
-
-    /* This is used by javasp.c to keep track of our reference to the byte
-     * array object that this blob came from. */
-    void *javasp_bytearray;
+    int collected;
 
     /* The index of the blob.
        An ODH'd blob has OSQL_BLOB_ODH_BIT set,

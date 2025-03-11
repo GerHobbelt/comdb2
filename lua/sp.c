@@ -89,7 +89,6 @@ extern int gbl_lua_new_trans_model;
 extern int gbl_max_lua_instructions;
 extern int gbl_lua_version;
 extern int gbl_notimeouts;
-extern int gbl_epoch_time;
 extern int gbl_allow_lua_print;
 extern int gbl_allow_lua_dynamic_libs;
 extern int gbl_lua_prepare_max_retries;
@@ -1443,11 +1442,39 @@ static int lua_sql_step(Lua lua, sqlite3_stmt *stmt)
     return rc;
 }
 
+static void set_sqlrow_stmt(Lua L)
+{
+    /*
+    **  stack:
+    **    1. row (lua table)
+    **    2. stmt
+    **  tag stmt to row by:
+    **    newtbl = {}
+    **    newtbl.__metatable = stmt
+    **    setmetatable(row, newtbl)
+    */
+    lua_newtable(L);
+    lua_pushvalue(L, -3);
+    lua_setfield(L, -2, "__metatable");
+    lua_setmetatable(L, -2);
+    luabb_set_sqlrow(L);
+}
+
+static dbstmt_t *get_sqlrow_stmt(Lua L)
+{
+    dbstmt_t *stmt = NULL;
+    if (lua_getmetatable(L, -1) == 0) return NULL;
+    lua_getfield(L, -1, "__metatable");
+    if (luabb_type(L, -1) == DBTYPES_DBSTMT) stmt = lua_touserdata(L, -1);
+    lua_pop(L, 2);
+    return stmt;
+}
+
 static int stmt_sql_step(Lua L, dbstmt_t *dbstmt)
 {
     int rc;
     if ((rc = lua_sql_step(L, dbstmt->stmt)) == SQLITE_ROW) {
-        set_sqlrow_stmt(L, dbstmt);
+        set_sqlrow_stmt(L);
     }
     return rc;
 }
@@ -2401,9 +2428,9 @@ static int luatable_emit(Lua L)
 {
     int cols;
     SP sp = getsp(L);
+    dbstmt_t *dbstmt;
     sqlite3_stmt *stmt = NULL;
-    dbstmt_t *dbstmt = get_sqlrow_stmt(L);
-    if (dbstmt) {
+    if ((dbstmt = get_sqlrow_stmt(L)) != NULL && dbstmt->stmt) {
         stmt = dbstmt->stmt;
         cols = column_count(NULL, stmt);
     } else if (sp->parent->ntypes) {
@@ -5235,7 +5262,8 @@ static void init_dbconsumer_funcs(Lua L)
 
 static void *lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 {
-    return comdb2_realloc(ud, ptr, nsize);
+    /* ensure that realloc(ptr, NULL, 0) does nothing for lua. see lua/lmem.c */
+    return (ptr == NULL && nsize == 0) ? NULL : comdb2_realloc(ud, ptr, nsize);
 }
 
 static int create_sp_int(SP sp, char **err)
@@ -7226,22 +7254,12 @@ static int exec_procedure_int(struct sqlthdstate *thd,
     if ((rc = get_spname(clnt, spname, &end_ptr, err)) != 0)
         return rc;
 
-    struct sql_thread *sqlthd = pthread_getspecific(query_info_key);
-
     if (strncmp(spname, "comdb2_legacy_", 14) == 0)
         return exec_comdb2_legacy(thd, clnt, err, end_ptr);
 
     if (strcmp(spname, "debug") == 0) {
         debug_sp(clnt);
         return 0;
-    }
-
-    // Use () to differentiate between tablename and spname
-    snprintf(spfunc, sizeof(spfunc), "%s()", spname);
-
-    if (access_control_check_sql_read(NULL, sqlthd, spfunc)) {
-        (*err) = strdup("Read access denied for the stored procedure");
-        return SQLITE_ACCESS;
     }
 
     if ((rc = setup_sp_int(spname, thd, clnt, trigger, &new_vm, err)) != 0) return rc;
@@ -7276,6 +7294,16 @@ static int exec_procedure_int(struct sqlthdstate *thd,
 
     if (trigger || consumer)
         clnt->current_user.bypass_auth = 1;
+
+    struct sql_thread *sqlthd = pthread_getspecific(query_info_key);
+
+    // Use () to differentiate between tablename and spname
+    snprintf(spfunc, sizeof(spfunc), "%s()", spname);
+
+    if (access_control_check_sql_read(NULL, sqlthd, spfunc)) {
+        (*err) = strdup("Read access denied for the stored procedure");
+        return SQLITE_ACCESS;
+    }
 
     if (gbl_is_physical_replicant && consumer) {
         rc = -3;
