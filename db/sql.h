@@ -33,10 +33,11 @@
 #include "osqlshadtbl.h"
 #include "fwd_types.h"
 #include "comdb2_ruleset.h"
-#include "fdb_fend.h"
 #include <sp.h>
 #include "sql_stmt_cache.h"
 #include "db_access.h"
+#include "sqliteInt.h"
+#include "ast.h"
 
 /* Modern transaction modes, more or less */
 enum transaction_level {
@@ -245,6 +246,18 @@ enum trans_clntcomm {
 void sql_set_sqlengine_state(struct sqlclntstate *clnt, char *file, int line,
                              int newstate);
 
+
+struct fdb_distributed_tran;
+typedef struct fdb_distributed_tran fdb_distributed_tran_t;
+struct fdb_tbl_ent;
+typedef struct fdb_tbl_ent fdb_tbl_ent_t;
+struct fdb_access;
+typedef struct fdb_access fdb_access_t;
+struct fdb_affinity;
+typedef struct fdb_affinity fdb_affinity_t;
+struct fdb;
+typedef struct fdb fdb_t;
+
 typedef struct {
     enum transaction_level mode; /* TRANLEVEL_SOSQL, TRANLEVEL_RECOM, ... */
 
@@ -373,7 +386,8 @@ enum {
     XRESPONSE(RESPONSE_ROW_LAST_DUMMY)                                         \
     XRESPONSE(RESPONSE_ROW_LUA)                                                \
     XRESPONSE(RESPONSE_ROW_STR)                                                \
-    XRESPONSE(RESPONSE_TRACE)
+    XRESPONSE(RESPONSE_TRACE)                                                  \
+    XRESPONSE(RESPONSE_ROW_REMTRAN)
 
 #define XRESPONSE(x) x,
 enum WriteResponsesEnum { RESPONSE_TYPES };
@@ -982,6 +996,8 @@ struct sqlclntstate {
     char *externalAuthUser;
 
     struct remsql_set remsql_set;
+    int fdb_push_remote; /* cache the global on each prepare */
+    int fdb_push_remote_write; /* cache the global on each prepare */
 
     // fdb 2pc
     int use_2pc;
@@ -1000,6 +1016,7 @@ struct sqlclntstate {
     unsigned disabled_logdel : 1; /* 1 if this clnt disabled logdel using set stmt and has not tried to re-enable it */
     unsigned verify_dbstore : 1;
 };
+typedef struct sqlclntstate sqlclntstate;
 
 /* Query stats. */
 struct query_path_component {
@@ -1111,7 +1128,7 @@ struct BtCursor {
     /* special case for master table: the table is fake,
        just keep track of which entry we are pointing to */
     int tblpos;
-    fdb_tbl_ent_t *crt_sqlite_master_row;
+    struct fdb_tbl_ent *crt_sqlite_master_row;
 
     /* special case for a temp table: pointer to a temp table handle */
     struct temptable *tmptable;
@@ -1176,7 +1193,7 @@ struct BtCursor {
     unsigned long long last_cached_genid;
 
     /* remotes */
-    fdb_cursor_if_t *fdbc;
+    struct fdb_cursor_if *fdbc;
 
     /* cursor access range */
     CurRange *range;
@@ -1349,7 +1366,13 @@ int fdb_add_remote_time(BtCursor *pCur, unsigned long long start,
  * refers to a remote table
  *
  */
-int fdb_push_run(Parse *pParse, struct dohsql_node *node);
+int fdb_push_setup(Parse *pParse, struct dohsql_node *node);
+
+/**
+ * Same as fdb_push_setup, but for remote writes
+ *
+ */
+int fdb_push_write_setup(Parse *pParse, enum ast_type type, Table *pTab);
 
 /**
  * Free remote push support
@@ -1360,7 +1383,7 @@ void fdb_push_free(fdb_push_connector_t **fdb_push);
  * Pack an sqlite result to be send to a remote db
  *
  */
-void fdb_sqlite_row(sqlite3_stmt *stmt, Mem *res);
+void fdb_sqlite_row(sqlclntstate *clnt, sqlite3_stmt *stmt, Mem *res);
 
 /**
  * Free a packed sqlite row after being used
@@ -1373,6 +1396,11 @@ void fdb_sqlite_row_free(Mem *res);
  *
  */
 int handle_fdb_push(struct sqlclntstate *clnt, struct errstat *err);
+/**
+ * Same as handle_fdb_push, but for writes
+ *
+ */
+int handle_fdb_push_write(struct sqlclntstate *clnt, struct errstat *err);
 
 int sqlite3LockStmtTables(sqlite3_stmt *pStmt);
 int sqlite3UnlockStmtTablesRemotes(struct sqlclntstate *clnt);
@@ -1581,7 +1609,7 @@ int fdb_access_control_create(struct sqlclntstate *, char *str);
 int disable_server_sql_timeouts(void);
 int osql_clean_sqlclntstate(struct sqlclntstate *);
 void handle_failed_dispatch(struct sqlclntstate *, char *err);
-int start_new_transaction(struct sqlclntstate *, struct sql_thread *);
+int start_new_transaction(struct sqlclntstate *);
 int sqlite3LockStmtTablesRecover(sqlite3_stmt *);
 
 struct sql_col_info {

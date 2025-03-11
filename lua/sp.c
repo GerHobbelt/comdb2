@@ -77,6 +77,8 @@
 #include <carray.h>
 #include <trigger_main.h>
 
+#include "fdb_fend.h"
+
 extern int gbl_dump_sql_dispatched; /* dump all sql strings dispatched */
 extern int gbl_return_long_column_names;
 extern int gbl_max_sqlcache;
@@ -887,7 +889,7 @@ static int dbconsumer_consume(Lua L)
         }
     }
     if (!clnt->intrans) {
-        if ((rc = start_new_transaction(clnt, clnt->thd->sqlthd)) != 0) {
+        if ((rc = start_new_transaction(clnt)) != 0) {
             luaL_error(L, "%s: start_new_transaction intrans:%d err:%s rc:%d\n",
                        __func__, clnt->intrans, err, rc);
         }
@@ -7174,6 +7176,9 @@ static int exec_procedure_int(struct sqlthdstate *thd,
 
     if (IS_SYS(spname)) init_sys_funcs(L);
 
+    if (trigger || consumer)
+        clnt->current_user.bypass_auth = 1;
+
     if (gbl_is_physical_replicant && consumer) {
         rc = -3;
         (*err) = strdup("Cannot execute consumer on physical-replicant");
@@ -7317,6 +7322,10 @@ void lua_func(sqlite3_context *context, int argc, sqlite3_value **argv)
 
 void *exec_trigger(char *spname)
 {
+    char thdname[16];
+    snprintf(thdname, sizeof(thdname), "T:%s", spname);
+    comdb2_name_thread(thdname);
+
     char sql[128];
     snprintf(sql, sizeof(sql), "exec procedure %s()", spname);
 
@@ -7325,7 +7334,6 @@ void *exec_trigger(char *spname)
     clnt.dbtran.mode = TRANLEVEL_SOSQL;
     clnt.sql = sql;
     clnt.dbtran.trans_has_sp = 1;
-    clnt.current_user.bypass_auth = 1;
 
     thread_memcreate(128 * 1024);
     struct sqlthdstate thd = {0};

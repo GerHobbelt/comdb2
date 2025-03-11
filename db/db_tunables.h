@@ -558,7 +558,10 @@ REGISTER_TUNABLE("foreign_db_allow_cross_class", NULL, TUNABLE_BOOLEAN, &gbl_fdb
                  READONLY | NOARG | READEARLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("foreign_db_resolve_local", NULL, TUNABLE_BOOLEAN, &gbl_fdb_resolve_local,
                  READONLY | NOARG | READEARLY, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("foreign_db_push_remote", NULL, TUNABLE_BOOLEAN, &gbl_fdb_push_remote, NOARG, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("foreign_db_push_remote", "Fdb proxy more for reads (OFF turns off writes as well). (Default: on)", TUNABLE_BOOLEAN, &gbl_fdb_push_remote, NOARG, NULL, NULL, 
+                 fdb_push_update, NULL);
+REGISTER_TUNABLE("foreign_db_push_remote_writes", "Fdb proxy mode for writes (ON turns on reads as well). (Default: on)", TUNABLE_BOOLEAN, &gbl_fdb_push_remote_write, NOARG, NULL, NULL,
+                 fdb_push_write_update, NULL);
 REGISTER_TUNABLE("foreign_db_push_redirect",
                  "Redirect fdb query to run via client instead of on server. (Default: off)", TUNABLE_BOOLEAN,
                  &gbl_fdb_push_redirect_foreign, NOARG, NULL, NULL, NULL, NULL);
@@ -1531,9 +1534,9 @@ REGISTER_TUNABLE("commit_delay_on_copy_ms",
 REGISTER_TUNABLE("commit_delay_trace", "Verbose commit-delays.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_commit_delay_trace,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("commit_lsn_map", "Maintain a map of transaction commit LSNs. (Default: on)",
-                 TUNABLE_BOOLEAN, &gbl_commit_lsn_map,
-                 NOARG, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("test_commit_lsn_map", "Maintain a map of transaction commit LSNs. (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_test_commit_lsn_map,
+                 NOARG | INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("incoherent_slow_inactive_timeout", "Periodically reset slow-nodes to incoherent.  (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_incoherent_slow_inactive_timeout, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("set_coherent_state_trace", "Verbose coherency trace.  (Default: off)", TUNABLE_BOOLEAN,
@@ -1644,6 +1647,10 @@ REGISTER_TUNABLE("handle_buf_latency_ms",
                  "(Default: 0)",
                  TUNABLE_INTEGER, &gbl_handle_buf_add_latency_ms,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("disable_legacy_queues",
+                 "Disable legacy queues and route messages through comdb2 queue buddy. (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_disable_legacy_queues, 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("queuedb_timeout_sec",
                  "Unassign Lua consumer/trigger if no heartbeat received for this time",

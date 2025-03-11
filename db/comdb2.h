@@ -2920,7 +2920,7 @@ enum {
 
 struct sql_thread *start_sql_thread(void);
 struct sqlclntstate;
-int initialize_shadow_trans(struct sqlclntstate *, struct sql_thread *thd);
+int initialize_shadow_trans(struct sqlclntstate *);
 void get_current_lsn(struct sqlclntstate *clnt);
 void done_sql_thread(void);
 int sql_debug_logf(struct sqlclntstate *clnt, const char *func, int line,
@@ -3281,6 +3281,7 @@ extern int gbl_new_snapisol_logging;
 extern int gbl_new_snapisol_asof;
 extern int gbl_update_shadows_interval;
 extern int gbl_lowpri_snapisol_sessions;
+extern int gbl_disable_legacy_queues;
 
 /* stats */
 /* non-sql request service times (last minute, last hour, since start) */
@@ -3695,6 +3696,8 @@ extern int gbl_server_admin_mode;
 void csc2_free_all(void);
 
 int fdb_default_ver_set(int val);
+int fdb_push_write_set(int val);
+int fdb_push_set(int val);
 
 /* hack to temporary allow bools on production stage */
 void csc2_allow_bools(void);
@@ -3710,5 +3713,7 @@ static inline char *skipws(char *str)
     }
     return str;
 }
+
+void get_disable_skipscan_all();
 
 #endif /* !INCLUDED_COMDB2_H */
