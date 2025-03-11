@@ -88,6 +88,7 @@ struct fingerprint_track {
     hash_t *query_plan_hash;   /* Query plans associated with fingerprint + cost stats */
     int alert_once_query_plan; /* Alert only once if there is a better query plan for a query. Init to 1 */
     int alert_once_query_plan_max; /* Alert (once) if hit max number of plans for associated query. Init to 1 */
+    int alert_once_truncated_col;  /* Alert once if we truncated some col in the query. Init to 1 */
 };
 
 struct sql_authorizer_state {
@@ -358,6 +359,7 @@ enum {
     XRESPONSE(RESPONSE_EFFECTS)                                                \
     XRESPONSE(RESPONSE_ERROR)                                                  \
     XRESPONSE(RESPONSE_ERROR_ACCESS)                                           \
+    XRESPONSE(RESPONSE_ERROR_APPSOCK_LIMIT)                                    \
     XRESPONSE(RESPONSE_ERROR_BAD_STATE)                                        \
     XRESPONSE(RESPONSE_ERROR_PREPARE)                                          \
     XRESPONSE(RESPONSE_ERROR_PREPARE_RETRY)                                    \
@@ -925,6 +927,7 @@ struct sqlclntstate {
     time_t connect_time;
     time_t last_reset_time;
     int state_start_time;
+    int64_t netwaitus;
     enum connection_state state;
     pthread_mutex_t state_lk;
     /* The node doesn't change.  The pid does as connections get donated.  We
@@ -949,6 +952,8 @@ struct sqlclntstate {
     unsigned force_fdb_push_redirect : 1; // this should only be set if can_redirect_fdb is true
     unsigned force_fdb_push_remote : 1;
     unsigned return_long_column_names : 1; // if 0 then tunable decides
+    unsigned num_adjusted_column_name_length; // does not consider fastsql
+    char **adjusted_column_names;
     unsigned in_local_cache : 1;
 
     char *sqlengine_state_file;
@@ -993,6 +998,7 @@ struct sqlclntstate {
     LISTC_T(struct participant) participants;
 
     unsigned disabled_logdel : 1; /* 1 if this clnt disabled logdel using set stmt and has not tried to re-enable it */
+    unsigned verify_dbstore : 1;
 };
 
 /* Query stats. */
@@ -1312,6 +1318,7 @@ int sqlite3_close_serial(sqlite3 **);
 void reset_clnt(struct sqlclntstate *, int initial);
 void cleanup_clnt(struct sqlclntstate *);
 void free_client_info(struct sqlclntstate *);
+void free_client_adj_col_names(struct sqlclntstate *);
 void reset_query_effects(struct sqlclntstate *);
 
 int sqlite_to_ondisk(struct schema *s, const void *inp, int len, void *outp,
@@ -1480,7 +1487,7 @@ int clear_fingerprints(int *plans_count);
 void calc_fingerprint(const char *zNormSql, size_t *pnNormSql,
                       unsigned char fingerprint[FINGERPRINTSZ]);
 void add_fingerprint(struct sqlclntstate *, sqlite3_stmt *, struct string_ref *, const char *, int64_t, int64_t,
-                     int64_t, int64_t, struct reqlogger *, unsigned char *fingerprint_out, int is_lua);
+                     int64_t, int64_t, struct reqlogger *, unsigned char *, int);
 
 long long run_sql_return_ll(const char *query, struct errstat *err);
 long long run_sql_thd_return_ll(const char *query, struct sql_thread *thd,

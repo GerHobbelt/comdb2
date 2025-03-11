@@ -2261,6 +2261,7 @@ struct __lc_cache {
 struct __ufid_to_db_t {
 	u_int8_t ufid[DB_FILE_ID_LEN];
 	int ignore : 1;
+	void *log_trigger;
 	char *fname;
 	DB *dbp;
 };
@@ -2357,6 +2358,10 @@ struct __db_env {
 				   const DB_LSN *, char*, int, void *));
 	int	 (*rep_ignore) 
 			__P((const char *));
+	void *(*rep_is_log_trigger) 
+			__P((const char *));
+	int  (*rep_log_trigger_cb)
+			__P((void *, const DB_LSN *, const DB_LSN *, const char *, u_int32_t, const void *));
 	int	 (*txn_logical_start)
 			__P((DB_ENV *, void *state, u_int64_t ltranid,
 			DB_LSN *lsn));
@@ -2606,6 +2611,8 @@ struct __db_env {
 	int  (*set_rep_db_pagesize) __P((DB_ENV *, int));
 	int  (*get_rep_db_pagesize) __P((DB_ENV *, int *));
 	int  (*set_rep_ignore) __P((DB_ENV *, int (*func)(const char *filename)));
+	int  (*set_log_trigger) __P((DB_ENV *, void *(*is_trigger)(const char *filename),
+					int (*trigger_cb)(void *, const DB_LSN *lsn, const DB_LSN *commit_lsn, const char *filename, u_int32_t op, const void *log)));
 	void *tx_handle;		/* Txn handle and methods. */
 	int  (*get_tx_max) __P((DB_ENV *, u_int32_t *));
 	int  (*set_tx_max) __P((DB_ENV *, u_int32_t));
@@ -2848,6 +2855,8 @@ struct __db_env {
 
 struct __modsnap_txn
 {
+	int is_allowed_to_open_cursors;
+	DB_LSN modsnap_start_lsn;
 	DB_LSN prior_checkpoint_lsn;
 	LINKC_T(struct __modsnap_txn) lnk;
 };
@@ -2871,8 +2880,6 @@ struct __txn_commit_map {
 	pthread_mutex_t txmap_mutexp;
 	int64_t highest_logfile;
 	int64_t smallest_logfile;
-	DB_LSN modsnap_start_lsn;
-	DB_LSN highest_checkpoint_lsn;
 	hash_t *transactions;
 	hash_t *logfile_lists;
 };

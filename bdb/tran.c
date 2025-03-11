@@ -69,8 +69,6 @@ int gbl_debug_sleep_before_prepare = 0;
 extern int gbl_debug_txn_sleep;
 extern int gbl_debug_disttxn_trace;
 extern int __txn_getpriority(DB_TXN *txnp, int *priority);
-extern int __txn_commit_map_get_highest_checkpoint_lsn(DB_ENV *dbenv, DB_LSN *out_highest_checkpoint_lsn, int lock); 
-extern int __txn_commit_map_get_modsnap_start_lsn(DB_ENV *dbenv, DB_LSN *out_modsnap_start_lsn, int lock); 
 
 #if 0
 int __lock_dump_region_lockerid __P((DB_ENV *, const char *, FILE *, u_int32_t lockerid));
@@ -2763,6 +2761,8 @@ int bdb_get_lowest_modsnap_file(bdb_state_type *bdb_state)
     pthread_mutex_lock(&dbenv->outstanding_modsnap_lock);
 
     LISTC_FOR_EACH(&dbenv->outstanding_modsnaps, outstanding_modsnap, lnk) {
+        if (!outstanding_modsnap->is_allowed_to_open_cursors) { continue; }
+
         min_file = itr++ == 0 || outstanding_modsnap->prior_checkpoint_lsn.file < min_file 
         ? outstanding_modsnap->prior_checkpoint_lsn.file : min_file;
     }
@@ -2771,6 +2771,12 @@ int bdb_get_lowest_modsnap_file(bdb_state_type *bdb_state)
 
     return min_file;
 }
+
+int bdb_is_modsnap_txn_allowed_to_open_cursors(void * registration)
+{
+    return ((MODSNAP_TXN *) registration)->is_allowed_to_open_cursors;
+}
+
 
 void bdb_unregister_modsnap(bdb_state_type *bdb_state, void * registration)
 {
@@ -2787,79 +2793,25 @@ void bdb_unregister_modsnap(bdb_state_type *bdb_state, void * registration)
     free(outstanding_modsnap);
 }
 
-int bdb_get_modsnap_start_state(bdb_state_type *bdb_state,
-                        int is_ha_retry,
-                        int snapshot_epoch,
-                        unsigned int *modsnap_start_lsn_file,
-                        unsigned int *modsnap_start_lsn_offset,
-                        unsigned int *last_checkpoint_lsn_file,
-                        unsigned int *last_checkpoint_lsn_offset)
-{
-    DB_ENV *dbenv;
-    DB_LSN modsnap_start_lsn;
-    DB_LSN last_checkpoint_lsn;
-    DB_TXN_COMMIT_MAP *txmap;
-    int rc;
-
-    rc = 0;
-    dbenv = bdb_state->dbenv;
-    txmap = dbenv->txmap;
-
-    if (is_ha_retry) {
-        modsnap_start_lsn.file = *modsnap_start_lsn_file;
-        modsnap_start_lsn.offset = *modsnap_start_lsn_offset;
-
-        bdb_checkpoint_list_get_ckplsn_before_lsn(modsnap_start_lsn, &last_checkpoint_lsn);
-    } else if (snapshot_epoch) {
-        // This LSN is not necessarily a commit LSN but this is okay --
-        // it can still serve as our start point.
-        bdb_get_lsn_context_from_timestamp(bdb_state, snapshot_epoch, &modsnap_start_lsn, 0, &rc); 
-        if (rc != 0) {
-            return rc;
-        }
-
-        bdb_checkpoint_list_get_ckplsn_before_lsn(modsnap_start_lsn, &last_checkpoint_lsn);
-    } else {
-        Pthread_mutex_lock(&txmap->txmap_mutexp);
-        if ((rc = __txn_commit_map_get_highest_checkpoint_lsn(dbenv, &last_checkpoint_lsn, 0)) != 0) {
-            Pthread_mutex_unlock(&txmap->txmap_mutexp);
-            return rc;
-        }
-        if ((rc = __txn_commit_map_get_modsnap_start_lsn(dbenv, &modsnap_start_lsn, 0)) != 0) {
-            Pthread_mutex_unlock(&txmap->txmap_mutexp);
-            return rc;
-        }
-        Pthread_mutex_unlock(&txmap->txmap_mutexp);
-    }
-
-    *modsnap_start_lsn_file = modsnap_start_lsn.file;
-    *modsnap_start_lsn_offset = modsnap_start_lsn.offset;
-    *last_checkpoint_lsn_file = last_checkpoint_lsn.file;
-    *last_checkpoint_lsn_offset = last_checkpoint_lsn.offset;
-
-    logmsg(LOGMSG_DEBUG, "Starting a new modsnap transaction with last commit lsn "
-            "%"PRIu32":%"PRIu32" and last checkpoint %"PRIu32":%"PRIu32"\n",
-            modsnap_start_lsn.file, modsnap_start_lsn.offset, last_checkpoint_lsn.file, last_checkpoint_lsn.offset);
-
-    return rc;
-}
-
 int bdb_register_modsnap(bdb_state_type *bdb_state,
+                        unsigned int modsnap_start_lsn_file,
+                        unsigned int modsnap_start_lsn_offset,
                         unsigned int last_checkpoint_lsn_file,
                         unsigned int last_checkpoint_lsn_offset,
                         void ** registration)
 {
-    DB_ENV *dbenv;
-    int rc;
-
-    rc = 0;
-    dbenv = bdb_state->dbenv;
+    DB_ENV *dbenv = bdb_state->dbenv;
 
     MODSNAP_TXN *outstanding_modsnap = malloc(sizeof(MODSNAP_TXN));
     if (!outstanding_modsnap) {
-        rc = ENOMEM;
-        return rc;
+        return ENOMEM;
     }
+
+    outstanding_modsnap->is_allowed_to_open_cursors = 1;
+
+    outstanding_modsnap->modsnap_start_lsn.file = modsnap_start_lsn_file;
+    outstanding_modsnap->modsnap_start_lsn.offset = modsnap_start_lsn_offset;
+
     outstanding_modsnap->prior_checkpoint_lsn.file = last_checkpoint_lsn_file;
     outstanding_modsnap->prior_checkpoint_lsn.offset = last_checkpoint_lsn_offset;
 
@@ -2869,7 +2821,84 @@ int bdb_register_modsnap(bdb_state_type *bdb_state,
 
     * (void **)registration = (void *) outstanding_modsnap;
     
-    return rc;
+    return 0;
+}
+
+static int get_modsnap_start_lsn(bdb_state_type *bdb_state, bdb_attr_type *bdb_attr, int snapshot_epoch,
+    unsigned int *p_modsnap_start_lsn_file, unsigned int *p_modsnap_start_lsn_offset)
+{
+    const int is_pit_snapshot = snapshot_epoch != 0;
+    const int durable_lsns_are_enabled = bdb_attr_get(bdb_attr, BDB_ATTR_DURABLE_LSNS);
+
+    if (is_pit_snapshot)
+    {
+        DB_LSN modsnap_start_lsn;
+        int bdberr = 0;
+        const int rc = bdb_get_lsn_context_from_timestamp(bdb_state, snapshot_epoch,
+            &modsnap_start_lsn, 0, &bdberr); 
+
+        if (rc || bdberr) {
+            logmsg(LOGMSG_ERROR, "%s: Failed to get LSN from timestamp with rc %d and bdberr %d\n",
+                __func__, rc, bdberr);
+            return rc | bdberr;
+        }
+
+        *p_modsnap_start_lsn_file = modsnap_start_lsn.file;
+        *p_modsnap_start_lsn_offset = modsnap_start_lsn.offset;
+    } else if (durable_lsns_are_enabled) {
+        uint32_t durable_gen;
+        const int rc = request_durable_lsn_from_master(
+            bdb_state, p_modsnap_start_lsn_file, p_modsnap_start_lsn_offset, &durable_gen);
+
+        if (rc) {
+            logmsg(LOGMSG_ERROR, "%s: Failed to get durable LSN from master with rc %d\n",
+                __func__, rc);
+            return rc;
+        }
+    } else {
+        (void)bdb_get_current_lsn(bdb_state, p_modsnap_start_lsn_file, p_modsnap_start_lsn_offset);
+    }
+
+    return 0;
+}
+
+int bdb_get_modsnap_start_state(bdb_state_type *bdb_state,
+                        bdb_attr_type *bdb_attr,
+                        int is_ha_retry,
+                        int snapshot_epoch,
+                        unsigned int *modsnap_start_lsn_file,
+                        unsigned int *modsnap_start_lsn_offset,
+                        unsigned int *last_checkpoint_lsn_file,
+                        unsigned int *last_checkpoint_lsn_offset)
+{
+    // If this is a ha-sql retry, then the retry snapshot is provided as input.
+    if (!is_ha_retry) {
+        const int rc = get_modsnap_start_lsn(bdb_state, bdb_attr, snapshot_epoch,
+            modsnap_start_lsn_file, modsnap_start_lsn_offset);
+        if (rc) {
+            logmsg(LOGMSG_ERROR, "%s: Failed to get modsnap start LSN\n", __func__);
+            return rc;
+        }
+    }
+
+    const DB_LSN modsnap_start_lsn = {*modsnap_start_lsn_file, *modsnap_start_lsn_offset};
+
+    DB_LSN last_checkpoint_lsn;
+    bdb_checkpoint_list_get_ckplsn_before_lsn(modsnap_start_lsn, &last_checkpoint_lsn);
+
+    *last_checkpoint_lsn_file = last_checkpoint_lsn.file;
+    *last_checkpoint_lsn_offset = last_checkpoint_lsn.offset;
+
+    logmsg(LOGMSG_DEBUG, "Starting a new modsnap transaction:\n"
+            "Is ha retry? %s\n"
+            "Snapshot epoch %d\n"
+            "Last commit LSN %"PRIu32":%"PRIu32"\n"
+            "Last checkpoint LSN %"PRIu32":%"PRIu32"\n",
+            is_ha_retry ? "Yes" : "No", snapshot_epoch,
+            modsnap_start_lsn.file, modsnap_start_lsn.offset,
+            last_checkpoint_lsn.file, last_checkpoint_lsn.offset);
+
+    return 0;
 }
 
 void bdb_upgrade_all_prepared(bdb_state_type *bdb_state)

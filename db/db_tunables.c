@@ -58,6 +58,8 @@ extern int gbl_decom;
 extern int gbl_disable_rowlocks;
 extern int gbl_disable_rowlocks_logging;
 extern int gbl_stack_at_lock_get;
+extern int gbl_stack_at_page_read;
+extern int gbl_stack_at_page_write;
 extern int gbl_stack_at_lock_handle;
 extern int gbl_stack_at_write_lock;
 extern int gbl_stack_at_lock_gen_increment;
@@ -106,6 +108,7 @@ extern int gbl_fdb_remsql_cdb2api;
 extern int gbl_goslow;
 extern int gbl_heartbeat_send;
 extern int gbl_keycompr;
+extern int gbl_llmeta_pagesize;
 extern int gbl_largepages;
 extern int gbl_loghist;
 extern int gbl_loghist_verbose;
@@ -171,6 +174,7 @@ extern int diffstat_thresh;
 extern int reqltruncate;
 extern int analyze_max_comp_threads;
 extern int analyze_max_table_threads;
+extern int gbl_always_reload_analyze;
 extern int gbl_block_set_commit_genid_trace;
 extern int gbl_random_prepare_commit;
 extern int gbl_all_prepare_commit;
@@ -344,6 +348,7 @@ extern int gbl_sc_pause_at_end;
 extern int gbl_sc_is_at_end;
 extern int gbl_max_password_cache_size;
 extern int gbl_check_constraint_feature;
+extern int gbl_verify_default_function;
 extern int gbl_default_function_feature;
 extern int gbl_on_del_set_null_feature;
 extern int gbl_sequence_feature;
@@ -459,6 +464,7 @@ extern int gbl_debug_invalid_genid;
 
 /* Tranlog */
 extern int gbl_tranlog_incoherent_timeout;
+extern int gbl_tranlog_default_timeout;
 extern int gbl_tranlog_maxpoll;
 
 /* Physical replication */
@@ -472,13 +478,15 @@ extern int gbl_physrep_hung_replicant_threshold;
 extern int gbl_physrep_revconn_check_interval;
 extern int gbl_physrep_update_registry_interval;
 extern int gbl_physrep_i_am_metadb;
+extern int gbl_physrep_keepalive_v2;
 extern int gbl_physrep_keepalive_freq_sec;
 extern int gbl_physrep_max_candidates;
 extern int gbl_physrep_max_pending_replicants;
 extern int gbl_physrep_reconnect_penalty;
-extern int gbl_physrep_register_interval;
+extern int gbl_physrep_reconnect_interval;
 extern int gbl_physrep_shuffle_host_list;
 extern int gbl_physrep_ignore_queues;
+extern int gbl_physrep_max_rollback;
 
 /* source-name / host is from lrl */
 extern char *gbl_physrep_source_dbname;
@@ -492,6 +500,9 @@ extern char *gbl_physrep_metadb_host;
 extern char *gbl_physrep_repl_name;
 extern char *gbl_physrep_repl_host;
 
+/* class-mach cache */
+extern int gbl_class_machs_refresh;
+
 /* Reversql connection/sql */
 extern int gbl_revsql_allow_command_exec;
 extern int gbl_revsql_debug;
@@ -501,6 +512,7 @@ extern int gbl_revsql_connect_freq_sec;
 extern int gbl_revsql_force_rte;
 extern int gbl_revsql_fake_connect_failure;
 extern int gbl_connect_remote_rte;
+extern int gbl_reverse_hosts_v2;
 
 int gbl_debug_tmptbl_corrupt_mem;
 int gbl_group_concat_mem_limit; /* 0 implies allow upto SQLITE_MAX_LENGTH,

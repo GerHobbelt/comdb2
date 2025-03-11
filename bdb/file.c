@@ -109,6 +109,8 @@
 #include <phys_rep.h>
 #include <phys_rep_lsn.h>
 
+#include <log_trigger.h>
+
 extern int gbl_bdblock_debug;
 extern int gbl_keycompr;
 extern int gbl_early;
@@ -296,6 +298,13 @@ static void bdb_snapshot_asof_delete_log(bdb_state_type *bdb_state, int filenum,
 {
     bdb_checkpoint_list_delete_log(filenum);
     bdb_delete_logfile_pglogs(bdb_state, filenum, 0);
+    bdb_delete_timestamp_lsn(bdb_state, timestamp);
+}
+
+static void bdb_modsnap_delete_log(bdb_state_type *bdb_state, int filenum,
+                                   time_t timestamp)
+{
+    bdb_checkpoint_list_delete_log(filenum);
     bdb_delete_timestamp_lsn(bdb_state, timestamp);
 }
 
@@ -2438,6 +2447,8 @@ static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
         rc = dbenv->set_rep_ignore(dbenv, physrep_ignore_btree);
     }
 
+    dbenv->set_log_trigger(dbenv, log_trigger_btree_trigger, log_trigger_callback);
+
 #ifdef BDB_VERB_REPLICATION_DEFAULT
     /* turn on verbose replication by default, so I can see what's happening
      * before the mtrap is enabled. */
@@ -3538,7 +3549,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
 {
     int rc;
     char **file;
-    struct stat sb;
+    struct stat logfile_stats;
     char logname[1024];
     int low_headroom_count = 0;
     int lowfilenum;                 /* the lowest log file across the cluster */
@@ -3773,11 +3784,11 @@ low_headroom:
                 logmsg(LOGMSG_USER, "considering %s filenum %d\n", *file, filenum);
             }
 
-            rc = stat(logname, &sb);
+            rc = stat(logname, &logfile_stats);
             if (rc != 0)
                 logmsg(LOGMSG_ERROR, "delete_log_files: stat returned %d\n", rc);
 
-            time_t log_age = time(NULL) - sb.st_mtime;
+            time_t log_age = time(NULL) - logfile_stats.st_mtime;
 
             if (log_age < bdb_state->attr->min_keep_logs_age) {
                 if (delete_hwm_logs == 0) {
@@ -3831,7 +3842,7 @@ low_headroom:
 
             /* If we have private blkseqs, make sure we don't delete logs that
              * contain blkseqs newer than our threshold.  */
-            if (bdb_state->attr->private_blkseq_enabled &&
+            if (!gbl_is_physical_replicant && bdb_state->attr->private_blkseq_enabled &&
                 !bdb_blkseq_can_delete_log(bdb_state, filenum)) {
                 if (bdb_state->attr->debug_log_deletion) {
                     logmsg(LOGMSG_USER, "skipping log %s filenm %d because it has recent blkseqs\n",
@@ -3866,22 +3877,6 @@ low_headroom:
                 }
                 break;
             }
-            if (gbl_modsnap_asof) {
-                /* check if we still can maintain snapshot that begin as of
-                 * min_keep_logs_age seconds ago */
-                if (!bdb_checkpoint_list_ok_to_delete_log(
-                        bdb_state->attr->min_keep_logs_age, filenum)) {
-                    if (bdb_state->attr->debug_log_deletion)
-                        logmsg(LOGMSG_USER, "not ok to delete log, log file needed "
-                                        "to recover to at least %ds ago\n",
-                                bdb_state->attr->min_keep_logs_age);
-                    if (ctrace_info)
-                        ctrace("not ok to delete log, log file needed to "
-                               "recover to at least %ds ago\n",
-                               bdb_state->attr->min_keep_logs_age);
-                    break;
-                }
-            }
 
             if (gbl_new_snapisol_asof) {
                 /* avoid trace between reading and writting recoverable lsn */
@@ -3900,7 +3895,9 @@ low_headroom:
                                filenum);
                     break;
                 }
+            }
 
+            if (gbl_new_snapisol_asof || gbl_modsnap_asof) {
                 /* check if we still can maintain snapshot that begin as of
                  * min_keep_logs_age seconds ago */
                 if (!bdb_checkpoint_list_ok_to_delete_log(
@@ -3929,7 +3926,11 @@ low_headroom:
              * around if we're only holding log files for other replicants to recover.
              */
             if (filenum <= local_lowfilenum && gbl_new_snapisol_asof)
-                bdb_snapshot_asof_delete_log(bdb_state, filenum, sb.st_mtime);
+                bdb_snapshot_asof_delete_log(bdb_state, filenum, logfile_stats.st_mtime);
+
+            if (filenum <= local_lowfilenum && gbl_modsnap_asof) {
+                bdb_modsnap_delete_log(bdb_state, filenum, logfile_stats.st_mtime);
+            }
 
             /* Delete transactions that committed in this file from the commit LSN map. */
             if (commit_lsn_map) {

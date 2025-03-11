@@ -1,91 +1,49 @@
 #!/usr/bin/env bash
 bash -n "$0" | exit 1
 
-source ${TESTSROOTDIR}/tools/runit_common.sh
-
-TIER="default"
-master=$(cdb2sql ${CDB2_OPTIONS} -tabs "${DBNAME}" "${TIER}" "select host from comdb2_cluster where is_master='Y'")
-readonly master
+source ${TESTSROOTDIR}/tools/runstepper.sh
+source setup.sh
 
 set -e
-export SHELLOPTS
 
-error() {
-	err "Failed at line $1"
-	exit 1
-}
+test_dir=$(dirname "$0")
+readonly test_dir
 
-insert_in_loop() {
-	while true;
-	do
-		cdb2sql ${CDB2_OPTIONS} "${DBNAME}" "${TIER}" "insert into t values(1)" &> /dev/null
-	done
-}
+run_test() {
+	local -r test_name=$1
+	local -r test_input="${test_name}.req"
+	local -r expected_output="${test_name}.req.exp"
+	local -r actual_output="${test_name}.req.res"
 
-test_snapshot_query() {
-	local -r snapshot_sleep_seconds=$1
+	runstepper ${DBNAME} ${test_input} ${actual_output} 1
 
-	set +e
-query_results=$(cdb2sql ${CDB2_OPTIONS} "${DBNAME}" default - 2>&1 <<EOF
-set transaction snapshot
-begin
-select count(*) from t
-select sleep(${snapshot_sleep_seconds})
-select count(*) from t
-commit
-EOF
-)
-	local -r query_rc=$?
+	if diff ${expected_output} ${actual_output}
+	then
+		echo "Test ${test_name} passed"
 
-	set -e
-	trap 'error $LINENO' ERR
+		return 0
+	else
+		echo "Test ${test_name} failed"
+		echo "see diff: 'diff ${test_dir}/${expected_output} ${test_dir}/${actual_output}'"
 
-	# Assert that the txn failed
-	(( query_rc != 0 )) 
-
-	local num_count_results
-	num_count_results=$(echo "$query_results" | sed -nr 's/count.*=([0-9]+)/\1/p' | wc -l)
-	readonly num_count_results
-
-	# Assert that we do not have any results for the second count stmt
-	(( num_count_results == 1));
+		return 1
+	fi
 }
 
 main() {
-	trap 'error $LINENO' ERR
+	local rc=0
 
-	cdb2sql ${CDB2_OPTIONS} "${DBNAME}" "${TIER}" "create table t(i int)"
-
-	# force a checkpoint
-	local -r flush_itrs=3
-	for (( i=0; i<flush_itrs; ++i ));
+	for test_name in t00 t01;
 	do
-		cdb2sql ${CDB2_OPTIONS} --host "${master}" "${DBNAME}" 'exec procedure sys.cmd.send("flush")'
+		setup_${test_name}
+
+		if ! run_test ${test_name};
+		then
+			rc=1
+		fi
 	done
 
-	local trunc_lsn
-	trunc_lsn=$(cdb2sql ${CDB2_OPTIONS} --host "${master}" "${DBNAME}" 'exec procedure sys.cmd.send("bdb cluster")' \
-		| grep MASTER | sed 's/.*lsn //g ; s/ .*//g')
-	readonly trunc_lsn
-
-	cdb2sql ${CDB2_OPTIONS} --host "${master}" "${DBNAME}" 'exec procedure sys.cmd.send("pushlogs 2")'
-	cdb2sql ${CDB2_OPTIONS} "${DBNAME}" "${TIER}" "insert into t values(1)"
-
-	local -r snapshot_sleep_seconds=5
-	test_snapshot_query "${snapshot_sleep_seconds}" &
-
-	local -r snapshot_pid=$!
-	trap "kill -9 $snapshot_pid" EXIT
-
-	sleep 1
-
-	cdb2sql ${CDB2_OPTIONS} --host "${master}" "${DBNAME}" "exec procedure sys.cmd.truncate_log(\"{"${trunc_lsn}"}\");" &
-
-	insert_in_loop &
-	local -r insert_pid=$!
-	trap "kill -9 $insert_pid" EXIT
-
-	wait "${snapshot_pid}"
+	return ${rc}
 }
 
 main

@@ -684,7 +684,7 @@ void sql_mem_shutdown_and_restore(void *arg, void **poldm)
     sql_mspace = *poldm; *poldm = NULL;
 }
 
-static void *sql_mem_malloc(int size)
+static void *sql_mem_malloc(size_t size)
 {
     if (unlikely(sql_mspace == NULL))
         sql_mem_init(NULL);
@@ -1263,7 +1263,7 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
     if (rqid) {
         reqlog_logf(logger, REQL_INFO, "rqid=%llx", rqid);
     }
-
+    reqlog_set_netwaitus(logger, clnt->netwaitus);
 
     unsigned char fingerprint[FINGERPRINTSZ];
     int have_fingerprint = 0;
@@ -1659,6 +1659,11 @@ static void sql_update_usertran_state(struct sqlclntstate *clnt)
     }
 }
 
+void clnt_increase_netwaitus(struct sqlclntstate *clnt, int this_many_us)
+{
+    clnt->netwaitus += this_many_us;
+}
+
 static void log_queue_time(struct reqlogger *logger, struct sqlclntstate *clnt)
 {
     if (!gbl_track_queue_time)
@@ -1727,7 +1732,7 @@ int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
         if (clnt->is_hasql_retry) {
             get_snapshot(clnt, (int *) &clnt->modsnap_start_lsn_file, (int *) &clnt->modsnap_start_lsn_offset);
         }
-        if (bdb_get_modsnap_start_state(db->handle, clnt->is_hasql_retry, clnt->snapshot,
+        if (bdb_get_modsnap_start_state(db->handle, thedb->bdb_attr, clnt->is_hasql_retry, clnt->snapshot,
                     &clnt->modsnap_start_lsn_file, &clnt->modsnap_start_lsn_offset, 
                     &clnt->last_checkpoint_lsn_file, &clnt->last_checkpoint_lsn_offset)) {
             logmsg(LOGMSG_ERROR, "%s: Failed to get modsnap txn start state\n", __func__);
@@ -1735,7 +1740,8 @@ int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
             goto done;
         }
 
-        if (bdb_register_modsnap(db->handle, clnt->last_checkpoint_lsn_file, clnt->last_checkpoint_lsn_offset, &clnt->modsnap_registration)) {
+        if (bdb_register_modsnap(db->handle, clnt->modsnap_start_lsn_file, clnt->modsnap_start_lsn_offset,
+                   clnt->last_checkpoint_lsn_file, clnt->last_checkpoint_lsn_offset, &clnt->modsnap_registration)) {
             logmsg(LOGMSG_ERROR, "%s: Failed to register modsnap txn\n", __func__);
             rc = SQLITE_INTERNAL;
             goto done;
@@ -2652,6 +2658,8 @@ static int reload_analyze(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                thd->dbopen_gen, bdb_get_dbopen_gen(), thd->analyze_gen, \
                cached_analyze_gen, thd->views_gen, gbl_views_gen);
 
+int gbl_always_reload_analyze = 0;
+
 // Call with schema_lk held and in_sqlite_init == 1
 static int check_thd_gen(struct sqlthdstate *thd, struct sqlclntstate *clnt, int flags)
 {
@@ -2669,7 +2677,7 @@ static int check_thd_gen(struct sqlthdstate *thd, struct sqlclntstate *clnt, int
         TRK;
         return SQLITE_SCHEMA;
     }
-    if (thd->analyze_gen != cached_analyze_gen) {
+    if ((thd->analyze_gen != cached_analyze_gen) || gbl_always_reload_analyze) {
         int ret;
         TRK;
         stmt_cache_reset(thd->stmt_cache);
@@ -3221,11 +3229,16 @@ static int get_prepared_stmt_int(struct sqlthdstate *thd,
 int get_prepared_stmt(struct sqlthdstate *thd, struct sqlclntstate *clnt,
                       struct sql_state *rec, struct errstat *err, int flags)
 {
-    curtran_assert_nolocks();
-    rdlock_schema_lk();
+    /* sc-thread holds schema-lk in verify_dbstore */
+    if (!clnt->verify_dbstore) {
+        curtran_assert_nolocks();
+        rdlock_schema_lk();
+    }
     int rc = get_prepared_stmt_int(thd, clnt, rec, err,
                                    flags | PREPARE_RECREATE);
-    unlock_schema_lk();
+    if (!clnt->verify_dbstore) {
+        unlock_schema_lk();
+    }
     if (gbl_stable_rootpages_test) {
         static int skip = 0;
         if (!skip) {
@@ -3913,6 +3926,8 @@ static void sqlite_done(struct sqlthdstate *thd, struct sqlclntstate *clnt,
 
     sql_statement_done(thd->sqlthd, thd->logger, clnt, stmt, outrc);
 
+    free_client_adj_col_names(clnt);
+
     if (stmt && !((Vdbe *)stmt)->explain && ((Vdbe *)stmt)->nScan > 1 &&
         (BDB_ATTR_GET(thedb->bdb_attr, PLANNER_WARN_ON_DISCREPANCY) == 1 ||
          BDB_ATTR_GET(thedb->bdb_attr, PLANNER_SHOW_SCANSTATS) == 1)) {
@@ -4334,7 +4349,7 @@ check_version:
 
     if (!thd->sqldb || (rc == SQLITE_SCHEMA_REMOTE)) {
         /* need to refresh things; we need to grab views lock */
-        if (!got_views_lock) {
+        if (!got_views_lock && !clnt->verify_dbstore) {
             unlock_schema_lk();
 
             if (!clnt->dbtran.cursor_tran) {
@@ -5191,6 +5206,18 @@ void free_client_info(struct sqlclntstate *clnt)
     }
 }
 
+void free_client_adj_col_names(struct sqlclntstate *clnt)
+{
+    if (!clnt->adjusted_column_names)
+        return;
+    for (int i = 0; i < clnt->num_adjusted_column_name_length; i++) {
+        free(clnt->adjusted_column_names[i]);
+    }
+    free(clnt->adjusted_column_names);
+    clnt->adjusted_column_names = NULL;
+    clnt->num_adjusted_column_name_length = 0;
+}
+
 void cleanup_clnt(struct sqlclntstate *clnt)
 {
     if (clnt->ctrl_sqlengine == SQLENG_INTRANS_STATE) {
@@ -5274,6 +5301,8 @@ void cleanup_clnt(struct sqlclntstate *clnt)
     free(clnt->authdata);
     clnt->authdata = NULL;
 
+    free_client_adj_col_names(clnt);
+
     destroy_hash(clnt->ddl_tables, free_it);
     destroy_hash(clnt->dml_tables, free_it);
     clnt->ddl_tables = NULL;
@@ -5289,6 +5318,11 @@ void cleanup_clnt(struct sqlclntstate *clnt)
     Pthread_mutex_destroy(&clnt->state_lk);
     Pthread_mutex_destroy(&clnt->sql_tick_lk);
     Pthread_mutex_destroy(&clnt->sql_lk);
+
+    if (clnt->modsnap_registration) {
+        bdb_unregister_modsnap(thedb->bdb_env, clnt->modsnap_registration);
+        clnt->modsnap_registration = NULL;
+    }
 }
 
 int gbl_unexpected_last_type_warn = 1;
@@ -5459,8 +5493,10 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
     clnt->force_fdb_push_remote = 0;
     clnt->typessql = 0;
     clnt->return_long_column_names = 0;
+    free_client_adj_col_names(clnt);
     free(clnt->prev_cost_string);
     clnt->prev_cost_string = NULL;
+    clnt->netwaitus = 0;
 
     if (gbl_sockbplog) {
         init_bplog_socket(clnt);
@@ -7154,7 +7190,7 @@ void clnt_plugin_reset(struct sqlclntstate *clnt)
 
 void exhausted_appsock_connections(struct sqlclntstate *clnt)
 {
-    write_response(clnt, RESPONSE_ERROR, "Exhausted appsock connections.", CDB2ERR_APPSOCK_LIMIT);
+    write_response(clnt, RESPONSE_ERROR_APPSOCK_LIMIT, "Exhausted appsock connections.", 0);
     gbl_denied_appsock_connection_count++;
     static time_t last = 0;
     time_t now = time(NULL);

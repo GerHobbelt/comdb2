@@ -144,6 +144,7 @@ void berk_memp_sync_alarm_ms(int);
 #include "reverse_conn.h"
 #include "alias.h"
 #include "str_util.h" /* QUOTE */
+#include "machcache.h"
 #define tokdup strndup
 
 int gbl_thedb_stopped = 0;
@@ -368,6 +369,8 @@ long long gbl_nsql_steps;
 int64_t gbl_nnewsql;
 int64_t gbl_nnewsql_ssl;
 long long gbl_nnewsql_steps;
+
+int64_t gbl_nnewsql_compat;
 
 uint32_t gbl_masterrejects = 0;
 
@@ -3411,6 +3414,30 @@ static int create_db(char *dbname, char *dir) {
    return 0;
 }
 
+static char **deferred_clientfuncs = NULL;
+static int deferred_clientfuncs_count = 0;
+
+void create_verify_dbstore_clientfunc(const char *dbstore)
+{
+    deferred_clientfuncs = realloc(deferred_clientfuncs, sizeof(char *) * (deferred_clientfuncs_count + 1));
+    deferred_clientfuncs[deferred_clientfuncs_count++] = strdup(dbstore);
+}
+
+static inline int verify_deferred_dbstore_clientfuncs(void)
+{
+    int rc = 0;
+    for (int i = 0; i < deferred_clientfuncs_count; i++) {
+        int vrc = verify_dbstore_client_function(deferred_clientfuncs[i]);
+        if (vrc) {
+            logmsg(LOGMSG_ERROR, "Failed to verify dbstore client function %s\n", deferred_clientfuncs[i]);
+            rc = -1;
+        }
+        free(deferred_clientfuncs[i]);
+    }
+    free(deferred_clientfuncs);
+    return rc;
+}
+
 static void setup_backup_logfiles_dir()
 {
     char *backupdir = comdb2_location_in_hash("backup_logfiles_dir", NULL);
@@ -3634,7 +3661,9 @@ static int init(int argc, char **argv)
 
     toblock_init();
 
-    if (mach_class_init()) {
+    class_machs_init();
+
+    if (mach_class_cluster_init()) {
         logmsg(LOGMSG_FATAL, "Failed to initialize machine classes\n");
         exit(1);
     }
@@ -4245,6 +4274,10 @@ static int init(int argc, char **argv)
     };
 
     load_auto_analyze_counters(); /* on starting, need to load counters */
+    if (gbl_create_mode && verify_deferred_dbstore_clientfuncs() != 0) {
+        logmsg(LOGMSG_FATAL, "invalid client function for dbstore\n");
+        return -1;
+    }
     unlock_schema_lk();
 
     /* There could have been an in-process schema change.  Add those tables now
@@ -6159,7 +6192,6 @@ int thdpool_alarm_on_queing(int len)
 
 int comdb2_recovery_cleanup(void *dbenv, void *inlsn, int is_master)
 {
-    int commit_lsn_map = get_commit_lsn_map_switch_value();
     int *file = &(((int *)(inlsn))[0]);
     int *offset = &(((int *)(inlsn))[1]);
     int rc;
@@ -6168,9 +6200,6 @@ int comdb2_recovery_cleanup(void *dbenv, void *inlsn, int is_master)
     logmsg(LOGMSG_INFO, "%s starting for [%d:%d] as %s\n", __func__, *file,
            *offset, is_master ? "MASTER" : "REPLICANT");
 
-    if (commit_lsn_map) {
-        rc = truncate_commit_lsn_map(thedb->bdb_env, *file);
-    }
     rc = truncate_asof_pglogs(thedb->bdb_env, *file, *offset);
 
     logmsg(LOGMSG_INFO, "%s complete [%d:%d] rc=%d\n", __func__, *file, *offset,

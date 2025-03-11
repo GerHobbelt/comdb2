@@ -1746,6 +1746,8 @@ extern int64_t gbl_nnewsql;
 extern int64_t gbl_nnewsql_ssl;
 extern long long gbl_nnewsql_steps;
 
+extern int64_t gbl_nnewsql_compat;
+
 /* Legacy request metrics */
 extern int64_t gbl_fastsql_execute_inline_params;
 extern int64_t gbl_fastsql_set_isolation_level;
@@ -1915,7 +1917,7 @@ int schema_init(void);
 int osqlpfthdpool_init(void);
 int init_opcode_handlers();
 void toblock_init(void);
-int mach_class_init(void);
+int mach_class_cluster_init(void);
 
 /* deinit routines */
 int destroy_appsock(void);
@@ -2675,6 +2677,9 @@ enum mach_class get_my_mach_class(void);
 enum mach_class get_mach_class(const char *host);
 const char *get_my_mach_class_str(void);
 const char *get_mach_class_str(char *host);
+const char *get_my_mach_cluster(void);
+const char *get_mach_cluster(const char *host);
+int get_cluster_machs(const char *cluster, int *count, const char ***machs);
 int allow_write_from_remote(const char *host);
 int allow_cluster_from_remote(const char *host);
 int allow_broadcast_to_remote(const char *host);
@@ -3670,6 +3675,7 @@ void dump_client_sql_data(struct reqlogger *logger, int do_snapshot);
 
 int backout_schema_changes(struct ireq *iq, tran_type *tran);
 int bplog_schemachange(struct ireq *iq);
+int verify_dbstore_client_function(const char *dbstore);
 
 extern int gbl_abort_invalid_query_info_key;
 extern int gbl_is_physical_replicant;

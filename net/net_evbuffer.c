@@ -475,6 +475,10 @@ static struct timeval last_timer_check;
 void check_timers(void)
 {
     if (gbl_timer_warn_interval == 0) return;
+    if (last_timer_check.tv_sec == 0) {
+        gettimeofday(&last_timer_check, NULL);
+        return;
+    }
 
     int ms, need_pstack = 0;
     struct timeval now, diff;
@@ -1640,7 +1644,7 @@ static void *rd_worker(void *data)
 {
     struct event_info *e = data;
     char thdname[16];
-    snprintf(thdname, sizeof(thdname), "rd:%s", e->host);
+    snprintf(thdname, sizeof(thdname), "%c:%s", e->service[0], e->host);
     comdb2_name_thread(thdname);
 
     netinfo_type *n = e->net_info->netinfo_ptr;
@@ -3375,7 +3379,7 @@ static void setup_bases(void)
             gettimeofday(&appsock_tick[i], NULL);
             char thdname[16];
             snprintf(thdname, sizeof(thdname), "appsock:%d", i);
-            init_base_priority(&appsock_thd[i], &appsock_base[i], thdname, 2, &appsock_tick[i]);
+            init_base_priority(&appsock_thd[i], &appsock_base[i], strdup(thdname), 2, &appsock_tick[i]);
         }
     } else {
         for (int i = 0; i < NUM_APPSOCK_RD; ++i) {

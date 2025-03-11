@@ -2988,6 +2988,7 @@ static inline void repdb_dequeue(DBT *control_dbt, DBT *rec_dbt)
 
 __thread int disable_random_deadlocks = 0;
 __thread int physrep_out_of_order = 0;
+__thread DB_LSN commit_lsn = {0};
 
 /*
  * __rep_apply --
@@ -3739,12 +3740,6 @@ gap_check:		max_lsn_dbtp = NULL;
 			goto err;
 		}
 
-		if (dbenv->txmap != NULL) {
-			Pthread_mutex_lock(&dbenv->txmap->txmap_mutexp);
-			dbenv->txmap->highest_checkpoint_lsn = ckp_args->ckp_lsn; 
-			Pthread_mutex_unlock(&dbenv->txmap->txmap_mutexp);
-		}
-
 		__os_free(dbenv, ckp_args);
 		if (gbl_flush_log_at_checkpoint)
 			__log_flush(dbenv, NULL);
@@ -4047,6 +4042,7 @@ worker_thd(struct thdpool *pool, void *work, void *thddata, int op)
 	rq = (struct __recovery_queue *)work;
 	rp = rq->processor;
 	dbenv = rq->processor->dbenv;
+	commit_lsn = rp->commit_lsn;
 
 	rr = listc_rtl(&rq->records);
 
@@ -4234,6 +4230,7 @@ processor_thd(struct thdpool *pool, void *work, void *thddata, int op)
 	dbenv = rp->dbenv;
 	db_rep = dbenv->rep_handle;
 	rep = db_rep->region;
+	commit_lsn = rp->commit_lsn;
 
 	/*  rep_process_message adds to the inflight-txn list while holding the bdblock
 	 *  We are executing here, so the inflight-txn list-size is greater than 0
@@ -5049,47 +5046,46 @@ __rep_process_txn_int(dbenv, rctl, rec, ltrans, maxlsn, commit_gen, lockid, rp,
 		if(td_stats)
 			x1 = bb_berkdb_fasttime();
 
-		if (!context) {
-			uint32_t flags =
-				LOCK_GET_LIST_GETLOCK | (gbl_rep_printlock ?
-				LOCK_GET_LIST_PRINTLOCK : 0);
-			assert(gbl_rep_lock_time_ms == 0);
-			gbl_rep_lock_time_ms = comdb2_time_epochms();
-			ret =
-				__lock_get_list_context(dbenv, lockid, flags,
+		uint32_t flags =
+			LOCK_GET_LIST_GETLOCK | (gbl_rep_printlock ?
+			LOCK_GET_LIST_PRINTLOCK : 0);
+
+		assert(gbl_rep_lock_time_ms == 0);
+		gbl_rep_lock_time_ms = comdb2_time_epochms();
+
+		ret = context
+			? __lock_get_list(dbenv, lockid, flags, DB_LOCK_WRITE,
+				lock_dbt, &(rctl->lsn), &pglogs, &keycnt, stdout)
+			: __lock_get_list_context(dbenv, lockid, flags,
 				DB_LOCK_WRITE, lock_dbt, &context, &(rctl->lsn),
 				&pglogs, &keycnt);
-			assert(gbl_rep_lock_time_ms != 0);
-			gbl_rep_lock_time_ms = 0;
-			if (ret != 0) {
-				line = __LINE__;
-				goto err;
-			}
 
-			if (ret == 0 && context) {
-				set_commit_context(context, commit_gen,
-					&(rctl->lsn), args, rectype);
-			}
-		} else {
-			uint32_t flags =
-				LOCK_GET_LIST_GETLOCK | (gbl_rep_printlock ?
-				LOCK_GET_LIST_PRINTLOCK : 0);
-			assert(gbl_rep_lock_time_ms == 0);
-			gbl_rep_lock_time_ms = comdb2_time_epochms();
-			ret =
-				__lock_get_list(dbenv, lockid, flags, DB_LOCK_WRITE,
-				lock_dbt, &(rctl->lsn), &pglogs, &keycnt, stdout);
-			assert(gbl_rep_lock_time_ms != 0);
-			gbl_rep_lock_time_ms = 0;
-			if (ret != 0) {
-				line = __LINE__;
-				goto err;
-			}
+		assert(gbl_rep_lock_time_ms != 0);
+		gbl_rep_lock_time_ms = 0;
 
-			if (ret == 0 && context) {
-				set_commit_context(context, commit_gen,
-					&(rctl->lsn), args, rectype);
-			}
+		if (ret != 0) {
+			line = __LINE__;
+			goto err;
+		}
+
+		// The LSN passed to `set_commit_context` becomes the new modsnap start lsn
+		//
+		// The following requirements apply for this to work:
+		//
+		// - Must set this before we early ack. If not:
+		//		1. txn A commits and the db early acks to the client
+		//		2. the same client starts a snapshot txn ('B')
+		//		3. txn B is given a start lsn that is less than txn A's commit lsn
+		//		4. txn B doesn't see txn A's updates
+		//
+		// - Must set this is set after acquiring locks. If not:
+		// 		1. `set_commit_context` is called for txn A
+		//		2. a new snapshot txn ('B') starts with txn A's commit lsn as its start lsn
+		//		3. txn B doesn't see txn A's updates because txn A hasn't acquired locks yet
+
+		if (context) {
+			set_commit_context(context, commit_gen,
+				&(rctl->lsn), args, rectype);
 		}
 
 		if (td_stats) {
@@ -5103,28 +5099,7 @@ __rep_process_txn_int(dbenv, rctl, rec, ltrans, maxlsn, commit_gen, lockid, rp,
 			goto err;
 		}
 
-		// Must add to commit lsn map after acquiring locks but before early acking.
-		//
-		// Why?
-		//
-		// 1) Must add to commit lsn map before early acking. If not:
-		//		DB early acks to the client ->
-		//		client starts snapshot txn. snapshot target lsn may be less than the lsn of 
-		//		the client's previous committed txn ->
-		//		snapshot rolls back the client's previous committed txn.
-		//
-		// * By adding to the commit lsn map before early acking, we ensure that snapshot 
-		// txns never roll back a txn that committed before it started from the client's perspective.
-		//
-		// 2) Must acquire locks before adding to the commit lsn map. If not:
-		// 		txn commit lsn is added to the map ->
-		//		new snapshot starts with this txn's commit lsn as its target lsn ->
-		//		if snapshot views a page before the other txn acquires a lock on it, it uses the old state;
-		//		otherwise, it blocks on the lock and uses the new state.
-		//
-		// * By adding to the commit lsn map after acquiring locks we ensure that a snapshot txn whose 
-		// target lsn is the commit lsn of an incompletely applied transaction sees all of its updates.
-		//
+
 		if (commit_lsn_map) {
 			if ((ret = __txn_commit_map_add(dbenv, 
 					utxnid, rctl->lsn)), ret != 0) {
@@ -5132,6 +5107,7 @@ __rep_process_txn_int(dbenv, rctl, rec, ltrans, maxlsn, commit_gen, lockid, rp,
 				goto err;
 			}
 		}
+		commit_lsn = rctl->lsn;
 
 		/* Set the last-locked lsn */
 		// This can cause an early ack regardless of the value of gbl_early.
@@ -6428,7 +6404,7 @@ __rep_collect_txn_from_log(dbenv, lsnp, lc, had_serializable_records, rp)
 				DB *file_dbp;
 				u_int8_t ufid[DB_FILE_ID_LEN] = {0};
 				if ((int)ufid_for_recovery_record(dbenv, NULL, rectype, ufid, &data, utxnid_logged)) {
-					__ufid_to_db(dbenv, NULL, &file_dbp, ufid, NULL);
+					__ufid_to_db(dbenv, NULL, &file_dbp, ufid, NULL, NULL);
 				}
 			}
 			if (lc->nalloc < lc->nlsns + 1) {
@@ -8444,9 +8420,8 @@ __rep_verify_match(dbenv, rp, savetime, online)
 		MUTEX_UNLOCK(dbenv, db_rep->rep_mutexp);
 	}
 
-	/* Masters must run full recovery */
 	int i_am_master = F_ISSET(rep, REP_F_MASTER);
-	if (gbl_rep_skip_recovery && !i_am_master && log_compare(&dbenv->prev_commit_lsn, &rp->lsn) <= 0) {
+	if (gbl_rep_skip_recovery && !i_am_master && dbenv->prev_commit_lsn.file > 0 && log_compare(&dbenv->prev_commit_lsn, &rp->lsn) <= 0) {
 		DB_TXNREGION *region;
 		region = ((DB_TXNMGR *)dbenv->tx_handle)->reginfo.primary;
 		dbenv->wrlock_recovery_lock(dbenv, __func__, __LINE__);
@@ -8503,7 +8478,7 @@ __rep_verify_match(dbenv, rp, savetime, online)
 
 		/* Recovery cleanup */
 		if (dbenv->rep_recovery_cleanup)
-			dbenv->rep_recovery_cleanup(dbenv, &trunclsn, i_am_master /* 0 */);
+			dbenv->rep_recovery_cleanup(dbenv, &trunclsn, i_am_master);
 
 		dbenv->unlock_recovery_lock(dbenv, __func__, __LINE__);
 
@@ -8521,6 +8496,7 @@ __rep_verify_match(dbenv, rp, savetime, online)
 			logmsg(LOGMSG_WARN, "skip-recovery cannot skip, prev-commit=[%d:%d] trunc-lsn=[%d:%d]\n",
 				dbenv->prev_commit_lsn.file, dbenv->prev_commit_lsn.offset, rp->lsn.file, rp->lsn.offset);
 		}
+		ZERO_LSN(dbenv->prev_commit_lsn);
 		if ((ret = __rep_dorecovery(dbenv, &rp->lsn, &trunclsn, online,
 						&undid_schema_change)) != 0) {
 			Pthread_mutex_unlock(&apply_lk);
