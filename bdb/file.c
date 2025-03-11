@@ -116,6 +116,7 @@ extern int gbl_keycompr;
 extern int gbl_early;
 extern int gbl_exit;
 extern int gbl_fullrecovery;
+extern int gbl_import_mode;
 extern char *gbl_myhostname;
 extern struct interned_string *gbl_myhostname_interned;
 extern size_t gbl_blobmem_cap;
@@ -182,6 +183,9 @@ extern int __db_find_recovery_start_if_enabled(DB_ENV *dbenv, DB_LSN *lsn);
 extern void *master_lease_thread(void *arg);
 extern void *coherency_lease_thread(void *arg);
 
+extern int bulk_import_tmpdb_should_ignore_table(const char *table);
+extern int bulk_import_tmpdb_should_ignore_btree(const char *filename);
+
 LISTC_T(struct checkpoint_list) ckp_lst;
 static pthread_mutex_t ckp_lst_mtx;
 int ckp_lst_ready = 0;
@@ -216,8 +220,15 @@ int bdb_checkpoint_list_push(DB_LSN lsn, DB_LSN ckp_lsn, int32_t timestamp, int 
     return 0;
 }
 
-static int bdb_checkpoint_list_ok_to_delete_log(int min_keep_logs_age,
-                                                int filenum)
+int bdb_recovery_timestamp_fulfills_log_age_requirement(int32_t recovery_timestamp)
+{
+    const bdb_state_type *bdb_state = thedb->bdb_env;
+
+    return (time(NULL) - recovery_timestamp) >= bdb_state->attr->min_keep_logs_age;
+}
+
+static int bdb_need_log_to_fulfill_log_age_requirement(int min_keep_logs_age,
+                                                       int filenum)
 {
     struct checkpoint_list *ckp = NULL;
     if (!ckp_lst_ready)
@@ -226,17 +237,13 @@ static int bdb_checkpoint_list_ok_to_delete_log(int min_keep_logs_age,
     LISTC_FOR_EACH(&ckp_lst, ckp, lnk)
     {
         /* find the first checkpoint which references a file that's larger than
-         * the deleted logfile */
+         * the logfile that we're considering deleting */
         if (ckp->ckp_lsn.file > filenum) {
-            /* the furthest point we can recover to is less than what we
-             * guaranteed the users*/
-            if (time(NULL) - ckp->timestamp < min_keep_logs_age) {
-                Pthread_mutex_unlock(&ckp_lst_mtx);
-                return 0;
-            } else {
-                Pthread_mutex_unlock(&ckp_lst_mtx);
-                return 1;
-            }
+            const int ckp_in_newer_logfile_can_be_oldest_ckp = bdb_recovery_timestamp_fulfills_log_age_requirement(ckp->timestamp);
+            const int need_logfile = !ckp_in_newer_logfile_can_be_oldest_ckp;
+
+            Pthread_mutex_unlock(&ckp_lst_mtx);
+            return need_logfile;
         }
     }
     Pthread_mutex_unlock(&ckp_lst_mtx);
@@ -324,7 +331,8 @@ void bdb_checkpoint_list_get_ckplsn_before_lsn(DB_LSN lsn, DB_LSN *lsnout)
     }
     Pthread_mutex_unlock(&ckp_lst_mtx);
 
-    /* huh?? not found? BUG BUG */
+    logmsg(LOGMSG_ERROR, "%s: Failed to find checkpoint LSN before %"PRIu32":%"PRIu32".\n",
+        __func__, lsn.file, lsn.offset);
     abort();
 }
 
@@ -1409,6 +1417,10 @@ static int close_dbs_int(bdb_state_type *bdb_state, DB_TXN *tid, int flags)
     u_int8_t fileid[21] = {0};
     char fid_str[41] = {0};
 
+    if (gbl_import_mode && bulk_import_tmpdb_should_ignore_table(bdb_state->name)) {
+        return 0;
+    }
+
     print(bdb_state, "in %s(name=%s)\n", __func__, bdb_state->name);
 
     if (!bdb_state->isopen) {
@@ -2445,6 +2457,8 @@ static DB_ENV *dbenv_open(bdb_state_type *bdb_state)
     extern int gbl_is_physical_replicant;
     if (gbl_is_physical_replicant) {
         rc = dbenv->set_rep_ignore(dbenv, physrep_ignore_btree);
+    } else if (gbl_import_mode) {
+        rc = dbenv->set_rep_ignore(dbenv, bulk_import_tmpdb_should_ignore_btree);
     }
 
     dbenv->set_log_trigger(dbenv, log_trigger_btree_trigger, log_trigger_callback);
@@ -2989,7 +3003,9 @@ if (!is_real_netinfo(bdb_state->repinfo->netinfo))
         exit(1);
     }
 
-    start_udp_reader(bdb_state);
+    if (!gbl_import_mode) {
+        start_udp_reader(bdb_state);
+    }
 
     if (startasmaster) {
         logmsg(LOGMSG_INFO,
@@ -3590,7 +3606,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
        log files greater than that filenum */
     lowfilenum = get_lowfilenum_sanclist(bdb_state);
     if (bdb_state->attr->debug_log_deletion)
-        logmsg(LOGMSG_USER, "lowfilenum %d\n", lowfilenum);
+        logmsg(LOGMSG_USER, "%s: cluster-wide lowfilenum is %d\n", __func__, lowfilenum);
 
     {
         struct interned_string *hosts[REPMAX];
@@ -3615,7 +3631,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
             if (sc_logical_lwm < lowfilenum) {
                 lowfilenum = sc_logical_lwm;
                 if (bdb_state->attr->debug_log_deletion) {
-                    logmsg(LOGMSG_USER, "Setting lowfilenum to %d for schema change logical redo\n", lowfilenum);
+                    logmsg(LOGMSG_USER, "%s: Setting lowfilenum to %d for schema change logical redo\n", __func__, lowfilenum);
                 }
             }
         }
@@ -3640,7 +3656,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
     if (gbl_rowlocks) {
         rc = bdb_get_file_lwm(bdb_state, NULL, &lwmlsn, &bdberr);
         if (rc) {
-            logmsg(LOGMSG_ERROR, "can't get perm lsn lwm rc %d bdberr %d\n", rc,
+            logmsg(LOGMSG_ERROR, "%s: can't get perm lsn lwm rc %d bdberr %d\n", __func__, rc,
                     bdberr);
             return;
         }
@@ -3665,18 +3681,16 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
         if (snapylsn.file <= lowfilenum) {
             if (bdb_state->attr->debug_log_deletion) {
                 logmsg(LOGMSG_USER,
-                       "Setting lowfilenum to %d from %d because snapylsn is "
-                       "%d:%d\n",
+                       "%s: Setting lowfilenum to %d from %d because snapylsn is "
+                       "%d:%d\n", __func__,
                        snapylsn.file - 1, lowfilenum, snapylsn.file,
                        snapylsn.offset);
             }
             lowfilenum = snapylsn.file - 1;
-        } else {
-            if (bdb_state->attr->debug_log_deletion) {
-                logmsg(LOGMSG_USER,
-                       "Ignoring snapylsn because %d is already <= %d:%d\n",
-                       lowfilenum, snapylsn.file, snapylsn.offset);
-            }
+        } else if (bdb_state->attr->debug_log_deletion) {
+            logmsg(LOGMSG_USER,
+                   "%s: Ignoring snapylsn because %d is already <= %d:%d\n",
+                   __func__, lowfilenum, snapylsn.file, snapylsn.offset);
         }
     }
 
@@ -3694,9 +3708,9 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
         if (asoflsn.file <= lowfilenum) {
             if (bdb_state->attr->debug_log_deletion) {
                 logmsg(LOGMSG_USER,
-                       "Setting lowfilenum to %d from %d because asoflsn is "
+                       "%s: Setting lowfilenum to %d from %d because asoflsn is "
                        "%d:%d\n",
-                       asoflsn.file - 1, lowfilenum, asoflsn.file,
+                       __func__, asoflsn.file - 1, lowfilenum, asoflsn.file,
                        asoflsn.offset);
             }
             lowfilenum = asoflsn.file - 1;
@@ -3707,7 +3721,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
     /* ask berk for a list of files that it thinks we can delete */
     rc = bdb_state->dbenv->log_archive(bdb_state->dbenv, &list, 0);
     if (rc != 0) {
-        logmsg(LOGMSG_ERROR, "delete_log_files: log_archive failed\n");
+        logmsg(LOGMSG_ERROR, "%s: log_archive rc(%d)\n", __func__, rc);
         return;
     }
 
@@ -3717,7 +3731,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
         print(bdb_state, "flushing log file\n");
     rc = bdb_state->dbenv->log_flush(bdb_state->dbenv, NULL);
     if (rc != 0) {
-        logmsg(LOGMSG_ERROR, "delete_log_files: log_flush err %d\n", rc);
+        logmsg(LOGMSG_ERROR, "%s: log_flush rc(%d)\n", __func__, rc);
         return;
     }
 
@@ -3725,14 +3739,14 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
 
         if ((rc = __db_find_recovery_start_if_enabled(bdb_state->dbenv,
                                                       &recovery_lsn)) != 0) {
-            logmsg(LOGMSG_ERROR, "__db_find_recovery_start ret %d\n", rc);
+            logmsg(LOGMSG_ERROR, "%s: __db_find_recovery_start rc(%d)\n", __func__, rc);
             return;
         }
 
         if (bdb_state->attr->debug_log_deletion) {
-            logmsg(LOGMSG_USER, "recovery lsn %u:%u\n", recovery_lsn.file,
+            logmsg(LOGMSG_USER, "%s: recovery lsn %u:%u\n", __func__, recovery_lsn.file,
                    recovery_lsn.offset);
-            logmsg(LOGMSG_USER, "lowfilenum %d\n", lowfilenum);
+            logmsg(LOGMSG_USER, "%s: lowfilenum %d\n", __func__, lowfilenum);
         }
     }
 
@@ -3768,12 +3782,12 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
             filenum = get_filenum_from_logfile(logname);
 
             if (bdb_state->attr->debug_log_deletion) {
-                logmsg(LOGMSG_USER, "considering %s filenum %d\n", *file, filenum);
+                logmsg(LOGMSG_USER, "%s: considering %s filenum %d\n", __func__, *file, filenum);
             }
 
             rc = stat(logname, &logfile_stats);
             if (rc != 0)
-                logmsg(LOGMSG_ERROR, "delete_log_files: stat returned %d\n", rc);
+                logmsg(LOGMSG_ERROR, "%s: delete_log_files: stat returned %d\n", __func__, rc);
 
             time_t log_age = time(NULL) - logfile_stats.st_mtime;
 
@@ -3781,12 +3795,13 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
                 if (delete_hwm_logs == 0) {
                     if (bdb_state->attr->debug_log_deletion)
                         logmsg(LOGMSG_ERROR,
-                               "Can't delete log, age %ld not older "
+                               "%s: Can't delete %s, age %ld not older "
                                "than log delete age %d.\n",
-                               log_age, bdb_state->attr->min_keep_logs_age);
+                               __func__, *file, log_age, bdb_state->attr->min_keep_logs_age);
                     if (ctrace_info)
-                        ctrace("Can't delete log, age %lld not older than log "
+                        ctrace("Can't delete %s, age %lld not older than log "
                                "delete age %lld.\n",
+                               *file,
                                (long long int)log_age,
                                (long long int)bdb_state->attr->min_keep_logs_age);
                     break;
@@ -3795,16 +3810,16 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
                 else {
                     if (bdb_state->attr->debug_log_deletion)
                         logmsg(LOGMSG_USER,
-                               "Log age %ld is younger than min_age "
+                               "%s: %s age %ld is younger than min_age "
                                "but fall-through: numlogs"
                                " is %d and high water mark is %d\n",
-                               log_age, numlogs,
+                               __func__, *file, log_age, numlogs,
                                bdb_state->attr->min_keep_logs_age_hwm);
                     if (ctrace_info)
-                        ctrace("Log age %ld is younger than min_age but "
+                        ctrace("%s age %ld is younger than min_age but "
                                "fall-through: numlogs"
                                " is %d and high water mark is %d\n",
-                               log_age, numlogs,
+                               *file, log_age, numlogs,
                                bdb_state->attr->min_keep_logs_age_hwm);
                     delete_hwm_logs--;
                 }
@@ -3812,7 +3827,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
 
             if (!__checkpoint_ok_to_delete_log(bdb_state->dbenv, filenum)) {
                 if (bdb_state->attr->debug_log_deletion)
-                    logmsg(LOGMSG_USER, "not ok to delete log, newer than checkpoint\n");
+                    logmsg(LOGMSG_USER, "%s: not ok to delete log %s, newer than checkpoint\n", __func__, *file);
                 if (ctrace_info)
                     ctrace("not ok to delete log, newer than checkpoint\n");
                 break;
@@ -3821,7 +3836,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
             if (recovery_lsn.file != 0 && filenum >= recovery_lsn.file) {
                 if (bdb_state->attr->debug_log_deletion)
                     logmsg(LOGMSG_DEBUG, 
-                           "not ok to delete log, newer than recovery point\n");
+                           "%s: not ok to delete log %s, newer than recovery point\n", __func__, *file);
                 if (ctrace_info)
                     ctrace("not ok to delete log, newer than recovery point\n");
                 break;
@@ -3832,35 +3847,35 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
             if (!gbl_is_physical_replicant && bdb_state->attr->private_blkseq_enabled &&
                 !bdb_blkseq_can_delete_log(bdb_state, filenum)) {
                 if (bdb_state->attr->debug_log_deletion) {
-                    logmsg(LOGMSG_USER, "skipping log %s filenm %d because it has recent blkseqs\n",
-                           *file, filenum);
+                    logmsg(LOGMSG_USER, "%s: skipping log %s because it has recent blkseqs\n",
+                           __func__, *file);
                     bdb_blkseq_dumplogs(bdb_state);
                 }
                 if (ctrace_info)
-                    ctrace("skipping log %s filenm %d because it has recent blkseqs\n",
-                           *file, filenum);
+                    ctrace("skipping log %s because it has recent blkseqs\n",
+                           *file);
                 break;
             }
 
             if (lwm_lowfilenum != -1 && filenum > lwm_lowfilenum) {
                 if (bdb_state->attr->debug_log_deletion)
-                    logmsg(LOGMSG_USER, "not ok to delete log %d, newer than the "
+                    logmsg(LOGMSG_USER, "%s: not ok to delete log %s, newer than the "
                                     "lwm_lowfilenum %d\n",
-                            filenum, lwm_lowfilenum);
+                            __func__, *file, lwm_lowfilenum);
                 if (ctrace_info)
-                    ctrace("not ok to delete log %d, newer than the "
+                    ctrace("not ok to delete log %s, newer than the "
                            "lwm_lowfilenum %d\n",
-                           filenum, lwm_lowfilenum);
+                           *file, lwm_lowfilenum);
                 break;
             }
 
             int lowest_in_use_modsnap_file = bdb_get_lowest_modsnap_file(bdb_state);
             if (lowest_in_use_modsnap_file != -1 && filenum >= lowest_in_use_modsnap_file) {
                 if (bdb_state->attr->debug_log_deletion) {
-                    logmsg(LOGMSG_USER, "not ok to delete log %d, log file "
+                    logmsg(LOGMSG_USER, "%s: not ok to delete log %s, log file "
                                     "needed to maintain current modsnap "
                                     "transactions\n",
-                          filenum);
+                          __func__, *file);
                 }
                 break;
             }
@@ -3872,34 +3887,31 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
                 if (!bdb_osql_trn_asof_ok_to_delete_log(filenum)) {
                     Pthread_mutex_unlock(&bdb_gbl_recoverable_lsn_mutex);
                     if (bdb_state->attr->debug_log_deletion)
-                        logmsg(LOGMSG_USER, "not ok to delete log %d, log file "
+                        logmsg(LOGMSG_USER, "%s: not ok to delete log %s, log file "
                                         "needed to maintain begin-as-of "
                                         "transactions\n",
-                                filenum);
+                                __func__, *file);
                     if (ctrace_info)
-                        ctrace("not ok to delete log %d, log file needed to "
+                        ctrace("not ok to delete log %s, log file needed to "
                                "maintain begin-as-of transactions\n",
-                               filenum);
+                               *file);
                     break;
                 }
             }
 
-            if (gbl_new_snapisol_asof || gbl_modsnap_asof) {
-                /* check if we still can maintain snapshot that begin as of
-                 * min_keep_logs_age seconds ago */
-                if (!bdb_checkpoint_list_ok_to_delete_log(
+            if ((gbl_new_snapisol_asof || gbl_modsnap_asof)
+                && bdb_need_log_to_fulfill_log_age_requirement(
                         bdb_state->attr->min_keep_logs_age, filenum)) {
-                    Pthread_mutex_unlock(&bdb_gbl_recoverable_lsn_mutex);
-                    if (bdb_state->attr->debug_log_deletion)
-                        logmsg(LOGMSG_USER, "not ok to delete log, log file needed "
-                                        "to recover to at least %ds ago\n",
-                                bdb_state->attr->min_keep_logs_age);
-                    if (ctrace_info)
-                        ctrace("not ok to delete log, log file needed to "
-                               "recover to at least %ds ago\n",
-                               bdb_state->attr->min_keep_logs_age);
-                    break;
-                }
+                Pthread_mutex_unlock(&bdb_gbl_recoverable_lsn_mutex);
+                if (bdb_state->attr->debug_log_deletion)
+                    logmsg(LOGMSG_USER, "%s: not ok to delete log %s, log file needed "
+                                    "to recover to at least %ds ago\n",
+                            __func__, *file, bdb_state->attr->min_keep_logs_age);
+                if (ctrace_info)
+                    ctrace("not ok to delete log %s, log file needed to "
+                           "recover to at least %ds ago\n", *file,
+                           bdb_state->attr->min_keep_logs_age);
+                break;
             }
 
             /* If we made it this far, we're willing to delete this file
@@ -3927,9 +3939,10 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
             if (filenum <= lowfilenum && delete_adjacent) {
                 /* delete this file if we got this far AND it's <= the
                  * replicated low number */
-                print(bdb_state, "delete_log_files: deleting logfile: %s "
-                                 "filenum %d lowfilenum was %d\n",logname,
-                      filenum, lowfilenum);
+
+                print(bdb_state, "%s: delete_log_files: deleting logfile: %s "
+                                 "lowfilenum was %d\n", __func__, logname, lowfilenum);
+
                 print(bdb_state, "filenums: %s\n", filenums_str);
                 if (gbl_rowlocks)
                     print(bdb_state, "lwm at log delete time:  %u:%u\n",
@@ -3943,11 +3956,11 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
                     char *newname = comdb2_location("backup_logfiles_dir", "%s", base);
 
                     if (bdb_state->attr->debug_log_deletion) {
-                        logmsg(LOGMSG_DEBUG, "backingup log %s to %s\n", logname, newname);
+                        logmsg(LOGMSG_DEBUG, "%s: backing up log %s to %s\n", __func__, logname, newname);
                     }
 
                     if (ctrace_info) {
-                        ctrace("backingup log %s to %s\n", logname, newname);
+                        ctrace("backing up log %s to %s\n", logname, newname);
                     }
 
                     char cmd[4048];
@@ -3963,19 +3976,19 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
                 } 
                 if (!deleted) {
                     if (bdb_state->attr->debug_log_deletion) {
-                        logmsg(LOGMSG_DEBUG, "deleting log %s %d\n", logname, filenum);
+                        logmsg(LOGMSG_DEBUG, "%s: deleting log %s\n", __func__, logname);
                     }
 
                     if (ctrace_info) {
-                        ctrace("deleting log %s %d\n", logname, filenum);
+                        ctrace("deleting log %s\n", logname);
                     }
 
                     __log_invalidate(filenum);
                     rc = unlink(logname);
                     if (rc) {
                         logmsg(LOGMSG_ERROR,
-                               "delete_log_files: unlink for <%s> returned %d %d\n",
-                               logname, rc, errno);
+                               "%s: unlink for <%s> returned %d %d\n",
+                               __func__, logname, rc, errno);
                     }
                 }
             } else {
@@ -3986,12 +3999,12 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
                  * loop, so don't actually delete so we don't create log holes.
                  */
                 if (bdb_state->attr->debug_log_deletion) {
-                   logmsg(LOGMSG_DEBUG, "not deleting %d, lowfilenum %d adj %d\n",
-                           filenum, lowfilenum, delete_adjacent);
+                   logmsg(LOGMSG_DEBUG, "%s: Not deleting %s, lowfilenum %d adj %d\n",
+                           __func__, *file, lowfilenum, delete_adjacent);
                 }
                 if (ctrace_info)
-                    ctrace("not deleting %d, lowfilenum %d adj %d\n",
-                           filenum, lowfilenum, delete_adjacent);
+                    ctrace("not deleting %s, lowfilenum %d adj %d\n",
+                           *file, lowfilenum, delete_adjacent);
                 delete_adjacent = 0;
             }
 
@@ -4032,7 +4045,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
         send_filenum = filenum;
 
         if (bdb_state->attr->debug_log_deletion)
-           logmsg(LOGMSG_DEBUG, "nothing to delete, at file %d\n", first_log_lsn.file);
+           logmsg(LOGMSG_DEBUG, "%s: nothing to delete, at file %d\n", __func__, first_log_lsn.file);
 
         if (ctrace_info)
             ctrace("nothing to delete, at file %d\n", first_log_lsn.file);
@@ -4043,9 +4056,9 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
     struct hostinfo *h = retrieve_hostinfo(bdb_state->repinfo->myhost_interned);
     h->filenum = send_filenum;
     if (bdb_state->attr->debug_log_deletion)
-        logmsg(LOGMSG_WARN, "sending filenum %d\n", send_filenum);
+        logmsg(LOGMSG_WARN, "%s: sending local lowfilenum (%d) to cluster\n", __func__, send_filenum);
     if (ctrace_info)
-        ctrace("sending filenum %d\n", send_filenum);
+        ctrace("sending local lowfilenum (%d) to cluster\n", send_filenum);
 }
 
 static pthread_mutex_t logdelete_lk = PTHREAD_MUTEX_INITIALIZER;
@@ -4174,6 +4187,11 @@ int open_dbs(bdb_state_type *bdb_state, int iammaster, int upgrade, int create, 
     tran_type tran = {0};
     DB_TXN *tmptid = NULL;
     DB_TXN *tid;
+
+    if (gbl_import_mode && bulk_import_tmpdb_should_ignore_table(bdb_state->name)) {
+        *pbdberr = BDBERR_NOERROR;
+        return 0;
+    }
 
     /* This function sets (*ptid) to NULL on txn abort. Make sure it points to something. */
     if (ptid == NULL)
@@ -4313,7 +4331,7 @@ deadlock_again:
                         pagesize = llpagesize;
                 }
 
-                if (gbl_is_physical_replicant && physrep_ignore_table(bdb_state->name)) {
+                if ((gbl_is_physical_replicant && physrep_ignore_table(bdb_state->name))) {
                     char new[PATH_MAX];
                     print(bdb_state, "truncating ignored table %s\n", bdb_trans(tmpname, new));
                     rc = truncate(bdb_trans(tmpname, new), pagesize * 2);

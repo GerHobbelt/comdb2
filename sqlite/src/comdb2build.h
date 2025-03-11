@@ -114,6 +114,7 @@ void comdb2Truncate(Parse*, Token*, Token*);
 void comdb2SchemachangeControl(Parse*, int, Token*, Token *);
 
 void comdb2bulkimport(Parse*, Token*, Token*, Token*, Token*);
+void comdb2Replace(Parse*, Token*, Token*, Token*);
 
 void comdb2CreateProcedure(Parse*, Token*, Token*, Token*);
 void comdb2DefaultProcedure(Parse*, Token*, Token*, int);
@@ -126,6 +127,7 @@ void comdb2DropPartition(Parse* p, Token* name);
 void comdb2CreateTimePartition(Parse* p, Token* period, Token* retention,
                                Token* start);
 void comdb2CreateManualPartition(Parse* p, Token* retention, Token* start);
+void comdb2CreateTestGenShard(Parse* p, IdList *dbs);
 void comdb2SaveMergeTable(Parse* p, Token* name, Token* database, int alter);
 
 void comdb2analyze(Parse*, int opt, Token*, Token*, int, int);

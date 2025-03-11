@@ -188,6 +188,10 @@ REGISTER_TUNABLE("dir",
                  "Database directory. (Default: $COMDB2_ROOT/var/cdb2/$DBNAME)",
                  TUNABLE_STRING, &db->basedir, READONLY, NULL, NULL, NULL,
                  NULL);
+REGISTER_TUNABLE("disable_sql_table_replacement",
+                 "Disables SQL table replacement",
+                 TUNABLE_BOOLEAN, &gbl_disable_sql_table_replacement,
+                 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("disable_cache_internal_nodes",
                  "Disables 'enable_cache_internal_nodes'. B-tree leaf nodes "
                  "are treated same as internal nodes.",
@@ -1496,6 +1500,10 @@ REGISTER_TUNABLE("req_all_time_threshold",
                  TUNABLE_INTEGER, &gbl_req_all_time_threshold,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("file_copier",
+                 "Tool used to copy files between nodes. Keys must be setup between machines. (Default: scp)",
+                 TUNABLE_STRING, &gbl_file_copier, READONLY, NULL, NULL, file_copier_update,
+                 NULL);
 REGISTER_TUNABLE("file_permissions",
                  "Default filesystem permissions for database files. (Default: 0660)",
                  TUNABLE_STRING, NULL, 0, file_permissions_value, NULL,
@@ -1857,6 +1865,8 @@ REGISTER_TUNABLE("physrep_source_dbname", "Physical replication source cluster d
                  &gbl_physrep_source_dbname, READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("physrep_source_host", "List of physical replication source cluster hosts.", TUNABLE_STRING,
                  &gbl_physrep_source_host, READONLY, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("physrep_source_dbnum", "Physical replication source cluster db number.", TUNABLE_INTEGER,
+                 &gbl_physrep_source_dbnum, READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("physrep_ignore_queues", "Don't replicate queues.", TUNABLE_BOOLEAN, &gbl_physrep_ignore_queues,
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("physrep_max_rollback", "Maximum logs physrep can rollback. (Default: 0)", TUNABLE_INTEGER,
@@ -2356,8 +2366,14 @@ REGISTER_TUNABLE("sqlite_use_temptable_for_rowset",
 REGISTER_TUNABLE("max_identity_cache", "Max cache size of externalauth identities (Default: 500)",
                  TUNABLE_INTEGER, &gbl_identity_cache_max, READONLY, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("authentication_cache_ageout", "Max age of authentication cache (Default: 900 seconds)",
+                 TUNABLE_INTEGER, &gbl_authentication_cache_ageout, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("max_authorization_cache", "Max cache size of authorized identities (Default: 2000)",
                  TUNABLE_INTEGER, &gbl_authorization_cache_max, READONLY, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("authz_cache", "Enable per query caching of authorized tables.  (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_cache_authz_perms, 0, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("authorization_cache_ageout", "Max age of authorization cache (Default: 600 seconds)",
                  TUNABLE_INTEGER, &gbl_authorization_cache_ageout, 0, NULL, NULL, NULL, NULL);

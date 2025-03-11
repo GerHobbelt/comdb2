@@ -789,6 +789,11 @@ typedef struct dbtable {
 
     /* name of the timepartition, if this is a shard */
     const char *timepartition_name;
+
+    /* THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */    
+    /* testgenshard stub */
+    char *dbnames[4];
+    /* END: THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */    
 } dbtable;
 
 struct dbview {
@@ -1597,7 +1602,11 @@ extern int64_t gbl_num_auth_denied;
 
 extern const char *const gbl_db_git_version_sha;
 extern const char gbl_db_version[];
+#ifdef COMDB2_TEST
+extern const char * gbl_db_semver; /* To support changing the semver in tests */
+#else
 extern const char gbl_db_semver[];
+#endif
 extern const char gbl_db_codename[];
 extern const char gbl_db_buildtype[];
 extern int gbl_sc_del_unused_files_threshold_ms;
@@ -1619,7 +1628,9 @@ extern int gbl_uses_externalauth_connect;
 extern int gbl_externalauth_warn;
 extern int gbl_identity_cache_max;
 extern int gbl_authorization_cache_max;
+extern int gbl_authentication_cache_ageout;
 extern int gbl_authorization_cache_ageout;
+extern int gbl_cache_authz_perms;
 extern int gbl_iam_verbosity;
 extern char* gbl_foreign_metadb;
 extern char* gbl_foreign_metadb_class;

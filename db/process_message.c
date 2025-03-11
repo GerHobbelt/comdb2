@@ -181,6 +181,9 @@ static const char *HELP_MAIN[] = {
     "replicants",
     "allow ...      - same format as in lrl file",
     "disallow ...   - same format as in lrl file",
+#ifdef COMDB2_TEST
+    "semver <vers>  - set semantic version",
+#endif
     "bdb ...        - backend commands", "debug ...      - misc debugging",
     "blob ...       - blob subsystem commands",
     "sql ...        - sql subsystem commands",
@@ -1145,6 +1148,10 @@ clipper_usage:
            logmsg(LOGMSG_USER, "pageorder trace disabled\n");
         }
     } else if (tokcmp(tok, ltok, "delfiles") == 0) {
+        if (gbl_is_physical_replicant) {
+            logmsg(LOGMSG_ERROR, "delfiles is invalid for physical replicants\n");
+            return -1;
+        }
         char table[MAXTABLELEN];
         int rc;
         int bdberr;
@@ -5147,6 +5154,16 @@ clipper_usage:
     } else if (tokcmp(tok, ltok, "norcache") == 0) {
         gbl_rcache = 0;
        logmsg(LOGMSG_USER, "disabled rcache\n");
+#endif
+#ifdef COMDB2_TEST
+    } else if (tokcmp(tok, ltok, "semver") == 0) {
+        tok = segtok(line, lline, &st, &ltok);
+        if (ltok == 0) {
+            logmsg(LOGMSG_ERROR, "Argument missing\n");
+            return 0;
+        }
+        gbl_db_semver = tokdup(tok, ltok);
+        logmsg(LOGMSG_USER, "Set semver to %s\n", gbl_db_semver);
 #endif
     } else if (tokcmp(tok, ltok, "swing") == 0) {
         ATOMIC_ADD32(gbl_master_changes, 1);

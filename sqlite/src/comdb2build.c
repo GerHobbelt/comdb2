@@ -1,4 +1,4 @@
-#include <stdio.h>
+
 #include "sqliteInt.h"
 #include <vdbeInt.h>
 #include "comdb2build.h"
@@ -28,6 +28,7 @@
 #include "db_access.h" /* gbl_check_access_controls */
 #include "comdb2_atomic.h"
 #include "alias.h"
+#include "importdata.pb-c.h"
 
 #define COMDB2_INVALID_AUTOINCREMENT "invalid datatype for autoincrement"
 
@@ -41,6 +42,7 @@ extern int gbl_permit_small_sequences;
 extern int gbl_lightweight_rename;
 
 int gbl_view_feature = 1;
+int gbl_disable_sql_table_replacement = 0;
 
 extern int sqlite3GetToken(const unsigned char *z, int *tokenType);
 extern int sqlite3ParserFallback(int iToken);
@@ -579,11 +581,30 @@ int comdb2SqlDryrunSchemaChange(OpFunc *f)
     return f->rc;
 }
 
+
 static int comdb2SqlSchemaChange_int(OpFunc *f, int usedb)
 {
-    struct sql_thread *thd = pthread_getspecific(query_info_key);
     struct schema_change_type *s = (struct schema_change_type*)f->arg;
-    f->rc = osql_schemachange_logic(s, thd, usedb);
+
+    /* THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
+    char **dbnames = s->partition.u.testgenshard.dbnames;
+    #define NSHARDS 4
+    int nshards = NSHARDS;
+    char *shardnames[NSHARDS] = {"$0_t", "$1_t", "$2_t", "$3_t"};
+    /* END: THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
+
+    /* if this is a generic sharding scheme, pass this to upper layer */
+    if (s->partition.type == PARTITION_ADD_TESTGENSHARD_COORD) {
+        /* running on coordinator replicant */
+        f->rc = osql_test_create_genshard(s, &f->errorMsg, nshards, dbnames, shardnames);
+        return f->rc;
+    } else if (s->partition.type == PARTITION_REM_TESTGENSHARD_COORD) {
+        /* dbnames are NULL here, not passed though syntax */
+        f->rc = osql_test_remove_genshard(s, &f->errorMsg, nshards, dbnames, shardnames);
+        return f->rc;
+    }
+
+    f->rc = osql_schemachange_logic(s, usedb);
     if (f->rc == SQLITE_DDL_MISUSE)
         f->errorMsg = "Transactional DDL Error: Overlapping Tables";
     else if (f->rc)
@@ -878,6 +899,26 @@ void comdb2DropTable(Parse *pParse, SrcList *pName)
 
     if (partition_first_shard)
         sc->partition.type = PARTITION_REMOVE;
+    else {
+        /* Check if this is a distributed drop */
+        struct dbtable *tbl = get_dbtable_by_name(sc->tablename);
+
+        if (tbl && tbl->sqlaliasname && tbl->dbnames[0]) {
+            /* dropping a generic partition */
+            /* NOTE: there are two was to get here:
+             * - initial drop table that is actually a partition (coordinator)
+             * - subsequent individual shard (participant)
+             *   The only way to check which case is by looking a clnt structure;
+             *   a participant receives a SET PARTITION NAME from coordinator
+             */
+            struct sql_thread *thd = pthread_getspecific(query_info_key);
+            assert(thd && thd->clnt);
+            sc->partition.type = thd->clnt->remsql_set.is_remsql == IS_REMCREATE ?
+                PARTITION_REM_TESTGENSHARD : PARTITION_REM_TESTGENSHARD_COORD ;
+            snprintf(sc->partition.u.testgenshard.tablename,
+                     sizeof(sc->partition.u.testgenshard.tablename), "%s", tbl->sqlaliasname);
+        }
+    }
 
     tran_type *tran = curtran_gettran();
     int rc = get_csc2_file_tran(partition_first_shard ? partition_first_shard :
@@ -1627,6 +1668,71 @@ void comdb2bulkimport(Parse* pParse, Token* nm,Token* lnm, Token* nm2, Token* ln
     setError(pParse, SQLITE_INTERNAL, "Not Implemented");
     logmsg(LOGMSG_DEBUG, "Bulk import from %.*s to %.*s ", nm->n + lnm->n,
            nm->z, nm2->n +lnm2->n, nm2->z);
+}
+
+/********************* IMPORT ****************************************************/
+
+void comdb2Replace(Parse* pParse, Token *nm, Token *nm2, Token *nm3)
+{
+    if (gbl_disable_sql_table_replacement) {
+        setError(pParse, SQLITE_MISUSE, "sql table replacement is disabled");
+        return;
+    }
+
+    char * srcdb = NULL;
+    char * src_tablename = NULL;
+    char * const dst_tablename = (char *)malloc(MAXTABLELEN);
+
+    Vdbe *v  = sqlite3GetVdbe(pParse);
+
+    BpfuncArg *arg = (BpfuncArg*) malloc(sizeof(BpfuncArg));
+    if (!arg) goto err;
+    bpfunc_arg__init(arg);
+
+    BpfuncBulkImport *aimport = (BpfuncBulkImport*) malloc(sizeof(BpfuncBulkImport));
+    if (!aimport) goto err;
+    bpfunc_bulk_import__init(aimport);
+
+    if (chkAndCopyTableTokens(pParse, dst_tablename, nm, 0,
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL)) {
+        goto err;
+    }
+
+    if (create_string_from_token(v, pParse, &srcdb, nm2)) {
+        goto err;
+    }
+
+    if (create_string_from_token(v, pParse, &src_tablename, nm3)) {
+        goto err;
+    }
+
+    aimport->srcdb = srcdb;
+    aimport->src_tablename = src_tablename;
+    aimport->dst_tablename = dst_tablename;
+
+    arg->bimp = aimport;
+    arg->type = BPFUNC_BULK_IMPORT;
+
+    comdb2prepareNoRows(v, pParse, 0, arg, &comdb2SendBpfunc, 
+                        (vdbeFuncArgFree) &free_bpfunc_arg);
+
+    return;
+err:
+    if (arg) {
+        free_bpfunc_arg(arg);
+    }
+    if (srcdb) {
+        free(srcdb);
+    }
+    if (src_tablename) {
+        free(src_tablename);
+    }
+    if (dst_tablename) {
+        free(dst_tablename);
+    }
+
+    logmsg(LOGMSG_ERROR, "%s: Bulk import failed\n", __func__);
+    return;
 }
 
 /********************* ANALYZE ***************************************************/
@@ -3232,7 +3338,19 @@ static void free_ddl_context(Parse *pParse)
     ctx = pParse->comdb2_ddl_ctx;
     if (ctx == 0)
         return;
-
+    /* THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
+    /* NOTE: dbnames are only set here if we failed to pass them properly
+     * to a schema change; the type should be xxx_COORD
+     */
+    if (ctx->partition && ctx->partition->type == PARTITION_ADD_TESTGENSHARD_COORD &&
+        ctx->partition->u.testgenshard.dbnames) {
+        int i;
+        for(i=0; i<4; i++) {
+            free(ctx->partition->u.testgenshard.dbnames[i]);
+        }
+        free(ctx->partition->u.testgenshard.dbnames);
+    }
+    /* END: THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
     free(ctx->partition_first_shardname);
     free(ctx->partition);
     
@@ -5047,8 +5165,15 @@ void comdb2CreateTableEnd(
 
     fillTableOption(sc, comdb2Opts);
 
-    if (ctx->partition)
+    if (ctx->partition) {
         sc->partition = *ctx->partition;
+        /* pass the allocated dbnames to sc */
+        /* THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
+        if (ctx->partition->type == PARTITION_ADD_TESTGENSHARD_COORD) {
+            ctx->partition->u.testgenshard.dbnames =  NULL;
+        /* END: THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
+        }
+    }
 
     /* prepare_csc2 can free the ctx, do not touch it afterwards ! */
     sc->newcsc2 = prepare_csc2(pParse, ctx);
@@ -7638,6 +7763,38 @@ void comdb2CreateManualPartition(Parse *pParse, Token *retention, Token *start)
     }
     partition->u.tpt.start = tmp;
 }
+
+/**
+ * Create a test generic sharding partition for server testing purposes
+ *
+ */
+void comdb2CreateTestGenShard(Parse* pParse, IdList *dbs)
+{
+    struct comdb2_partition *partition;
+
+    partition = _get_partition(pParse, 0);
+    if (!partition)
+        return;
+
+    partition->type = PARTITION_ADD_TESTGENSHARD_COORD;
+
+    if (dbs->nId != 4) {
+        setError(pParse, SQLITE_ABORT, "Need 4 dbs for shards");
+        return;
+    }
+
+    partition->u.testgenshard.dbnames = calloc(dbs->nId, sizeof(char*));
+    if (!partition->u.testgenshard.dbnames) {
+        setError(pParse, SQLITE_ABORT, "OOM partition dbnames");
+        return;
+    }
+
+    int i;
+    for (i = 0; i < dbs->nId; i++) {
+        partition->u.testgenshard.dbnames[i] = strdup(dbs->a[i].zName);
+    }
+}
+
 
 /*
  * Mark the partition for merging, with or without a table to be merged in

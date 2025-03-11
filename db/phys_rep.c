@@ -78,6 +78,7 @@ unsigned int physrep_min_logfile;
 unsigned int gbl_deferred_phys_update;
 
 char *gbl_physrep_source_dbname;
+int gbl_physrep_source_dbnum;
 char *gbl_physrep_source_host;
 char *gbl_physrep_metadb_name;
 char *gbl_physrep_metadb_host;
@@ -1057,15 +1058,19 @@ void physrep_update_low_file_num(int *lowfilenum, int *local_lowfilenum) {
 }
 
 static int slow_replicants_count(unsigned int *count) {
-    char query[200];
+    char query[400];
     int rc = 0;
 
     *count = 0;
 
+    /* tables are already indexed on dbname+host */
     sprintf(query,
-            "select count(*) from comdb2_physreps where cast(NOW() as "
-            "integer) - cast(last_keepalive as integer) >= %d",
-            gbl_physrep_hung_replicant_threshold);
+            "SELECT COUNT(*) FROM comdb2_physreps p JOIN comdb2_physrep_connections c "
+            "ON p.dbname = c.dbname "
+            "AND p.host = c.host "
+            "WHERE source_dbname = '%s' "
+            "AND now() - last_keepalive >= %d",
+            gbl_dbname, gbl_physrep_hung_replicant_threshold);
 
     cdb2_hndl_tp *repl_metadb;
     if ((rc = physrep_get_metadb_or_local_hndl(&repl_metadb)) != 0) {
@@ -1370,10 +1375,11 @@ repl_loop:
                     physrep_logmsg(level, "%s:%d Failed to register against cluster, attempt %d\n",
                                    __func__, __LINE__, notfound);
 
-                    sleep(1);
-                    while ((rc = get_metadb_hndl(&repl_metadb)) != 0) {
+                    do {
+                        cdb2_close(repl_metadb);
+                        repl_metadb = NULL;
                         sleep(1);
-                    }
+                    } while ((rc = get_metadb_hndl(&repl_metadb)) != 0);
                 }
 
                 repl_db_cnct = find_new_repl_db(repl_metadb, &repl_db);

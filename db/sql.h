@@ -641,8 +641,14 @@ struct user {
     uint8_t bypass_auth;
 };
 
+enum remsql_type {
+    NO_REMSQL = 0,
+    IS_REMSQL = 1,
+    IS_REMCREATE = 2
+};
+
 struct remsql_set {
-    int is_remsql;
+    enum remsql_type is_remsql;
     int server_version;
     int table_version;
     int is_schema;
@@ -650,6 +656,9 @@ struct remsql_set {
     uuid_t uuid;
     char *srcdbname;
     struct errstat xerr;
+    /* THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
+    char *dbnames[4];
+    /* END: THIS SECTION IS A STUB; TO BE REPLACED BY ACTUAL PARTITION SCHEMA */
 };
 
 #define in_client_trans(clnt) ((clnt)->in_client_trans)
@@ -1012,6 +1021,11 @@ struct sqlclntstate {
     char *coordinator_tier;
     char *coordinator_master;
 
+    hash_t *authz_read_tables;
+    hash_t *authz_write_tables;
+
+    int allow_make_request;
+
     // coordinator participant information
     LISTC_T(struct participant) participants;
 
@@ -1038,7 +1052,7 @@ struct temptable {
     struct temp_table *tbl;
     int flags;
     Btree *owner;
-    pthread_mutex_t *lk;
+    struct sp_tmptbl *sp_tmptbl;
 };
 
 struct Btree {
@@ -1401,7 +1415,8 @@ int handle_fdb_push(struct sqlclntstate *clnt, struct errstat *err);
  * Same as handle_fdb_push, but for writes
  *
  */
-int handle_fdb_push_write(struct sqlclntstate *clnt, struct errstat *err);
+int handle_fdb_push_write(struct sqlclntstate *clnt, struct errstat *err,
+                          int n_extra_sets, const char **sets);
 
 int sqlite3LockStmtTables(sqlite3_stmt *pStmt);
 int sqlite3UnlockStmtTablesRemotes(struct sqlclntstate *clnt);
@@ -1409,7 +1424,6 @@ void sql_remote_schema_changed(struct sqlclntstate *clnt, sqlite3_stmt *pStmt);
 int release_locks_on_emit_row(struct sqlclntstate *clnt);
 
 void clearClientSideRow(struct sqlclntstate *clnt);
-void comdb2_set_tmptbl_lk(pthread_mutex_t *);
 struct temptable get_tbl_by_rootpg(const sqlite3 *, int);
 void clone_temp_table(sqlite3_stmt *, struct temptable *);
 int sqlengine_prepare_engine(struct sqlthdstate *, struct sqlclntstate *,
@@ -1532,7 +1546,7 @@ struct query_plan_item {
 };
 int free_query_plan_hash(hash_t *query_plan_hash);
 int clear_query_plans();
-struct string_ref *form_query_plan(const struct client_query_stats *query_stats);
+struct string_ref *form_query_plan(sqlite3_stmt *stmt);
 void add_query_plan(int64_t cost, int64_t nrows, struct fingerprint_track *t, struct string_ref *zSql_ref,
                     struct string_ref *query_plan_ref, unsigned char *plan_fingerprint, char *params);
 
@@ -1661,5 +1675,16 @@ int forward_set_commands(struct sqlclntstate *clnt, cdb2_hndl_tp *hndl,
                          struct errstat *err);
 
 void wait_for_transactions(void);
+
+int osql_test_create_genshard(struct schema_change_type *sc, char **errmsg, int nshards,
+                              char **dbnames, char **shardnames);
+int osql_test_remove_genshard(struct schema_change_type *sc, char **errmsg, int nshards,
+                              char **dbnames, char **shardnames);
+
+struct sp_tmptbl {
+    pthread_mutex_t lk;
+    uint64_t rowid;
+};
+void set_tmptbl(struct sp_tmptbl *);
 
 #endif /* _SQL_H_ */
