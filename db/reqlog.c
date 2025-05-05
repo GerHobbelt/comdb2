@@ -80,7 +80,7 @@
 /* The normal case is for there to be no rules, just a long request threshold
  * which takes some default action on long requests.  If you want anything
  * different then you add rules and you have to lock around the list. */
-static int long_request_ms = 2000;
+int gbl_long_request_ms = 2000;
 static struct output *long_request_out = NULL;
 static pthread_mutex_t rules_mutex;
 static LISTC_T(struct logrule) rules;
@@ -797,9 +797,9 @@ void reqlog_process_message(char *line, int st, int lline)
         reqlog_init_off = 1;
     } else if (tokcmp(tok, ltok, "longrequest") == 0) {
         tok = segtok(line, lline, &st, &ltok);
-        long_request_ms = toknum(tok, ltok);
+        gbl_long_request_ms = toknum(tok, ltok);
         logmsg(LOGMSG_USER, "Long request threshold now %d msec\n",
-               long_request_ms);
+               gbl_long_request_ms);
     } else if (tokcmp(tok, ltok, "longsqlrequest") == 0) {
         tok = segtok(line, lline, &st, &ltok);
         gbl_sql_time_threshold = toknum(tok, ltok);
@@ -970,7 +970,7 @@ void reqlog_stat(void)
     struct logrule *rule;
     struct output *out;
     logmsg(LOGMSG_USER, "Long request threshold : %d msec (%dmsec  for SQL)\n",
-           long_request_ms, gbl_sql_time_threshold);
+           gbl_long_request_ms, gbl_sql_time_threshold);
     logmsg(LOGMSG_USER, "Long request log file  : %s\n",
            long_request_out->filename);
     logmsg(LOGMSG_USER, "diffstat threshold     : %d s\n", diffstat_thresh);
@@ -2190,7 +2190,7 @@ void reqlog_end_request(struct reqlogger *logger, int rc, const char *callfunc,
     if (logger->opcode == OP_SQL && !logger->iq) {
         long_request_thresh = gbl_sql_time_threshold;
     } else {
-        long_request_thresh = long_request_ms;
+        long_request_thresh = gbl_long_request_ms;
     }
 
     if (logger->durationus >= M2U(long_request_thresh)) {
@@ -2834,6 +2834,9 @@ struct summary_nodestats *get_nodestats_summary(unsigned *nodes_cnt,
         summaries[ii].ref = nodestats->ref;
         summaries[ii].is_ssl = nodestats->is_ssl;
 
+        summaries[ii].sql_queries_cdb2api = snap.sql_queries_cdb2api;
+        summaries[ii].sql_queries_comdb2api = snap.sql_queries_comdb2api;
+        summaries[ii].sql_queries_converted = snap.sql_queries_converted;
         summaries[ii].sql_queries = snap.sql_queries;
         summaries[ii].sql_steps = snap.sql_steps;
         summaries[ii].sql_rows = snap.sql_rows;
@@ -3042,7 +3045,7 @@ void nodestats_report(FILE *fh, const char *prefix, int disp_rates)
             prefix, "node");
     logmsgf(LOGMSG_USER, fh,
             "%s%5s |   finds rngexts  writes   other |    adds    upds    dels "
-            "blk/sql   recom snapisl  serial | queries   steps    rows\n",
+            "blk/sql   recom snapisl  serial | queries   steps    rows  newapi  oldapi old2new\n",
             prefix, "");
 
     summaries = get_nodestats_summary(&max_clients, disp_rates);
@@ -3056,14 +3059,17 @@ void nodestats_report(FILE *fh, const char *prefix, int disp_rates)
                 inet_ntoa(summaries[ii].addr), summaries[ii].ref);
         logmsgf(LOGMSG_USER, fh,
                 "%s%5d | %7u %7u %7u %7u | %7u %7u %7u %7u %7u %7u %7u | %7u "
-                "%7u %7u\n",
+                "%7u %7u %7u %7u %7u\n",
                 prefix, summaries[ii].node, summaries[ii].finds,
                 summaries[ii].rngexts, summaries[ii].writes,
                 summaries[ii].other_fstsnds, summaries[ii].adds,
                 summaries[ii].upds, summaries[ii].dels, summaries[ii].bsql,
                 summaries[ii].recom, summaries[ii].snapisol,
                 summaries[ii].serial, summaries[ii].sql_queries,
-                summaries[ii].sql_steps, summaries[ii].sql_rows);
+                summaries[ii].sql_steps, summaries[ii].sql_rows,
+                summaries[ii].sql_queries_cdb2api, 
+                summaries[ii].sql_queries_comdb2api,
+                summaries[ii].sql_queries_converted);
     }
 
     for (ii = 0; ii < max_clients; ii++) {

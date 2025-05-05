@@ -576,6 +576,9 @@ REGISTER_TUNABLE("fullrecovery",
                  "recovery from the beginning of "
                  "available logs. (Default : off)",
                  TUNABLE_BOOLEAN, &gbl_fullrecovery, READONLY | NOARG, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("eventlog_fullhintsql",
+                 "Log full sql statement in the event log for hint abbreviated sql. (Default : on)",
+                 TUNABLE_BOOLEAN, &gbl_eventlog_fullhintsql, NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("gbl_exit_on_pthread_create_fail",
                  "If set, database will exit if thread pools aren't able to "
                  "create threads. (Default: 1)",
@@ -752,8 +755,6 @@ REGISTER_TUNABLE("master_swing_sock_restart_sleep",
                  "For testing: sleep in osql_sock_restart when master swings",
                  TUNABLE_INTEGER, &gbl_master_swing_sock_restart_sleep,
                  READONLY, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("maxblobretries", NULL, TUNABLE_INTEGER, &gbl_maxblobretries,
-                 READONLY, NULL, maxretries_verify, NULL, NULL);
 REGISTER_TUNABLE("maxblockops", NULL, TUNABLE_INTEGER, &gbl_maxblockops,
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("maxcolumns",
@@ -1074,9 +1075,6 @@ REGISTER_TUNABLE("round_robin_stripes",
                  "default is to keep stripe affinity by writer. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_round_robin_stripes, READONLY | NOARG,
                  NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("rr_enable_count_changes", NULL, TUNABLE_BOOLEAN,
-                 &gbl_rrenablecountchanges, READONLY | NOARG, NULL, NULL, NULL,
-                 NULL);
 REGISTER_TUNABLE("sbuftimeout", NULL, TUNABLE_INTEGER, &gbl_sbuftimeout,
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sc_del_unused_files_threshold", NULL, TUNABLE_INTEGER,
@@ -1120,11 +1118,6 @@ REGISTER_TUNABLE("version_spfile", NULL, TUNABLE_STRING, &gbl_user_vers_spfile_n
 REGISTER_TUNABLE("timepartitions", NULL, TUNABLE_STRING,
                  &gbl_timepart_file_name, READONLY, NULL, NULL, file_update,
                  NULL);
-REGISTER_TUNABLE("sqlflush", "Force flushing the current record "
-                             "stream to client every specified "
-                             "number of records. (Default: 0)",
-                 TUNABLE_INTEGER, &gbl_sqlflush_freq, READONLY, NULL, NULL,
-                 NULL, NULL);
 REGISTER_TUNABLE("sqlreadahead", NULL, TUNABLE_INTEGER, &gbl_sqlreadahead,
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sqlreadaheadthresh", NULL, TUNABLE_INTEGER,
@@ -1219,9 +1212,6 @@ REGISTER_TUNABLE("update_shadows_interval",
 REGISTER_TUNABLE("upd_null_cstr_return_conv_err", NULL, TUNABLE_INTEGER,
                  &gbl_upd_null_cstr_return_conv_err, READONLY | NOARG, NULL,
                  NULL, NULL, NULL);
-REGISTER_TUNABLE("use_appsock_as_sqlthread", NULL, TUNABLE_INTEGER,
-                 &gbl_use_appsock_as_sqlthread, READONLY | NOARG, NULL, NULL,
-                 NULL, NULL);
 REGISTER_TUNABLE("use_live_schema_change", NULL, TUNABLE_INTEGER,
                  &gbl_default_livesc, READONLY | NOARG, NULL, NULL, NULL, NULL);
 /*
@@ -1558,6 +1548,16 @@ REGISTER_TUNABLE("test_commit_lsn_map", "Maintain a map of transaction commit LS
                  NOARG | INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("incoherent_slow_inactive_timeout", "Periodically reset slow-nodes to incoherent.  (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_incoherent_slow_inactive_timeout, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("max_incoherent_slow", "Sets maximum number of incoherent-slow nodes.  (Default: 3)", TUNABLE_INTEGER,
+                 &gbl_max_incoherent_slow, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("dynamic_max_incoherent_slow", "Calculate max incoherent-slow nodes dynamically.  (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_dynamic_max_incoherent_slow, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE(
+    "dynamic_max_incoherent_percent",
+    "Percentage of sanctioned nodes dynamic incoherent-slow will allow to be incoherent-slow.  (Default: 40)",
+    TUNABLE_INTEGER, &gbl_dynamic_max_incoherent_percent, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("set_coherent_state_trace", "Verbose coherency trace.  (Default: off)", TUNABLE_BOOLEAN,
                  &gbl_set_coherent_state_trace, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("finish_fill_threshold", "Fill to end if end is less than this.  (Default: 60000000)", TUNABLE_INTEGER,
@@ -2051,6 +2051,10 @@ REGISTER_TUNABLE("long_log_truncation_abort_thresh_sec",
                  TUNABLE_INTEGER, &gbl_long_log_truncation_abort_thresh_sec,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("long_req_threshold",
+                 "Sets the threshold time in ms after which requests are reported as running a long time. (Default: 2000 ms)",
+                 TUNABLE_INTEGER, &gbl_long_request_ms, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("cache_flush_interval",
                  "Save bufferpool once every this many seconds.  "
                  "(Default: 30)",
@@ -2455,14 +2459,17 @@ REGISTER_TUNABLE("incoherent_clnt_wait", "Delay incoherent reject if without mas
 REGISTER_TUNABLE("new_leader_duration", "Time new query waits for replicanted-recovery (Default: 3sec)",
                  TUNABLE_INTEGER, &gbl_new_leader_duration, 0, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE("timer_pstack_interval",
-                 "Skip pstack if last one was within specified interval in secs (Default: 5mins [300sec])",
-                 TUNABLE_INTEGER, &gbl_timer_pstack_interval, INTERNAL, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("timer_warn_interval",
+                 "Flag timer thds which tick longer than specified interval in msec. To disable, set to 0 (Default: 1500ms)",
+                 TUNABLE_INTEGER, &gbl_timer_warn_interval, INTERNAL, NULL, NULL, NULL, NULL);
 
-REGISTER_TUNABLE(
-    "timer_warn_interval",
-    "Flag timer thds which tick longer than specified interval in msec. To disable, set to 0 (Default: 1500ms)",
-    TUNABLE_INTEGER, &gbl_timer_warn_interval, INTERNAL, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("timer_pstack_threshold",
+                 "Request pstack if timers tick longer than specified interval in msec. (Default: 5000ms)",
+                  TUNABLE_INTEGER, &gbl_timer_pstack_threshold, INTERNAL, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("timer_pstack_interval",
+                 "Skip another pstack within specified interval in secs (Default: 30mins [1800sec])",
+                 TUNABLE_INTEGER, &gbl_timer_pstack_interval, INTERNAL, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("transaction_grace_period",
                  "Time to wait for connections with pending transactions to go away on exit. (Default: 60)",

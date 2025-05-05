@@ -121,7 +121,7 @@ extern char *gbl_myhostname;
 extern struct interned_string *gbl_myhostname_interned;
 extern size_t gbl_blobmem_cap;
 extern int gbl_backup_logfiles;
-struct timeval last_timer_pstack;
+struct timeval last_pstack_time;
 extern int gbl_modsnap_asof;
 
 extern int get_commit_lsn_map_switch_value();
@@ -227,8 +227,7 @@ int bdb_recovery_timestamp_fulfills_log_age_requirement(int32_t recovery_timesta
     return (time(NULL) - recovery_timestamp) >= bdb_state->attr->min_keep_logs_age;
 }
 
-static int bdb_need_log_to_fulfill_log_age_requirement(int min_keep_logs_age,
-                                                       int filenum)
+static int bdb_need_log_to_fulfill_log_age_requirement(int filenum)
 {
     struct checkpoint_list *ckp = NULL;
     if (!ckp_lst_ready)
@@ -2237,7 +2236,7 @@ void pstack_self(void)
         return;
 
     assert(running_pstack);
-    gettimeofday(&last_timer_pstack, NULL);
+    gettimeofday(&last_pstack_time, NULL);
 
     char cmd[256];
     char output[20] = "/tmp/pstack.XXXXXX";
@@ -3900,8 +3899,7 @@ static void delete_log_files_int(bdb_state_type *bdb_state)
             }
 
             if ((gbl_new_snapisol_asof || gbl_modsnap_asof)
-                && bdb_need_log_to_fulfill_log_age_requirement(
-                        bdb_state->attr->min_keep_logs_age, filenum)) {
+                && bdb_need_log_to_fulfill_log_age_requirement(filenum)) {
                 Pthread_mutex_unlock(&bdb_gbl_recoverable_lsn_mutex);
                 if (bdb_state->attr->debug_log_deletion)
                     logmsg(LOGMSG_USER, "%s: not ok to delete log %s, log file needed "

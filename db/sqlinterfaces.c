@@ -198,6 +198,8 @@ int gbl_thdpool_queue_only = 0;
 int gbl_random_sql_work_delayed = 0;
 int gbl_random_sql_work_rejected = 0;
 
+int gbl_eventlog_fullhintsql = 1;
+
 comdb2_query_preparer_t *query_preparer_plugin;
 int gbl_sql_recover_time = 10;
 int gbl_debug_recover_deadlock_evbuffer = 0;
@@ -1256,10 +1258,8 @@ static void sql_statement_done(struct sql_thread *thd, struct reqlogger *logger,
     LISTC_T(struct sql_hist) lst;
     listc_init(&lst, offsetof(struct sql_hist, lnk));
 
-    if (!clnt->sql_ref && clnt->sql) {
-        // incomming from dohast will not have sql_ref set
-        clnt->sql_ref = create_string_ref(clnt->sql);
-    }
+    assert(clnt->sql_ref);
+
     struct sql_hist *h = calloc(1, sizeof(struct sql_hist));
     h->sql_ref = get_ref(clnt->sql_ref);
     h->cost.cost = query_cost(thd);
@@ -2841,8 +2841,18 @@ void query_stats_setup(struct sqlthdstate *thd, struct sqlclntstate *clnt)
     /* berkdb stats */
     bdb_reset_thread_stats();
 
-    if (clnt->rawnodestats)
+    if (clnt->rawnodestats) {
         clnt->rawnodestats->sql_queries++;
+        const char *api = clnt->plugin.api_type(clnt);
+        if (strcmp(api, "comdb2api") == 0)
+            clnt->rawnodestats->sql_queries_comdb2api++;
+        else if (clnt->features.require_fastsql) {
+            clnt->rawnodestats->sql_queries_converted++;
+            log_legacy_request(NULL, clnt);
+        }
+        else
+            clnt->rawnodestats->sql_queries_cdb2api++;
+    }
 
     /* sql thread stats */
     thd->sqlthd->startms = comdb2_time_epochms();
@@ -2933,7 +2943,8 @@ static void _prepare_error(struct sqlthdstate *thd,
         errstr = (char *)sqlite3_errmsg(thd->sqldb);
         reqlog_logf(thd->logger, REQL_TRACE, "sqlite3_prepare failed %d: %s\n",
                     rc, errstr);
-        errstat_set_rcstrf(err, ERR_PREPARE_RETRY, "%s", errstr);
+        /* this is not retriable; api will retry unless ha or only begin was sent */
+        errstat_set_rcstrf(err, ERR_PREPARE, "%s", errstr);
 
         //srs_tran_del_last_query(clnt);
         return;
@@ -3983,6 +3994,11 @@ static void sqlite_done(struct sqlthdstate *thd, struct sqlclntstate *clnt,
     if (clnt->typessql_state)
         typessql_end(clnt);
 
+    if ((rec->status & CACHE_HAS_HINT) && rec->sql != clnt->sql && gbl_eventlog_fullhintsql) { 
+        clnt->hint_sql_ref = create_string_ref(rec->sql);
+        reqlog_set_sql(thd->logger, clnt->hint_sql_ref);
+    }
+
     sql_statement_done(thd->sqlthd, thd->logger, clnt, stmt, outrc);
 
     free_client_adj_col_names(clnt);
@@ -4003,6 +4019,8 @@ static void sqlite_done(struct sqlthdstate *thd, struct sqlclntstate *clnt,
        the next read in sqlite master will find them and try to use them
      */
     clearClientSideRow(clnt);
+
+    put_ref(&clnt->hint_sql_ref);
 }
 
 static void handle_stored_proc(struct sqlthdstate *thd,
@@ -4291,9 +4309,12 @@ check_version:
         get_copy_rootpages_nolock(thd->sqlthd);
         if (clnt->dbtran.cursor_tran) {
             if (thedb->timepart_views) {
+                const int latched_clnt_is_readonly = clnt->is_readonly;
+                clnt->is_readonly = 0;
                 /* how about we are gonna add the views ? */
                 rc = views_sqlite_update(thedb->timepart_views, thd->sqldb,
                                          &xerr, 0);
+                clnt->is_readonly = latched_clnt_is_readonly;
                 if (rc != VIEW_NOERR) {
                     logmsg(LOGMSG_FATAL,
                            "failed to create views rc=%d errstr=\"%s\"\n",

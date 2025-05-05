@@ -167,7 +167,6 @@ extern int gbl_update_delete_limit;
 extern int gbl_updategenids;
 extern int gbl_use_modsnap_for_snapshot;
 extern snap_impl_enum gbl_snap_impl;
-extern int gbl_use_appsock_as_sqlthread;
 extern int gbl_use_node_pri;
 extern int gbl_watchdog_watch_threshold;
 extern int portmux_port;
@@ -242,6 +241,9 @@ extern int gbl_getlock_latencyms;
 extern int gbl_last_locked_seqnum;
 extern int gbl_set_coherent_state_trace;
 extern int gbl_incoherent_slow_inactive_timeout;
+extern int gbl_max_incoherent_slow;
+extern int gbl_dynamic_max_incoherent_slow;
+extern int gbl_dynamic_max_incoherent_percent;
 extern int gbl_force_incoherent;
 extern int gbl_force_incoherent_master;
 extern int gbl_ignore_coherency;
@@ -364,6 +366,7 @@ extern int gbl_sequence_feature;
 extern int gbl_reproduce_sequence_corruption;
 extern int gbl_permissive_sequence_sc;
 extern int gbl_view_feature;
+extern int gbl_eventlog_fullhintsql;
 
 extern char *gbl_kafka_topic;
 extern char *gbl_kafka_brokers;
@@ -554,8 +557,9 @@ extern int gbl_pstack_self;
 /* For fdb connections using cdb2api */
 extern char *gbl_cdb2api_policy_override;
 
-extern int gbl_timer_pstack_interval;
 extern int gbl_timer_warn_interval;
+extern int gbl_timer_pstack_threshold;
+extern int gbl_timer_pstack_interval;
 
 int gbl_incoherent_clnt_wait = 10;
 int gbl_new_leader_duration = 3;
@@ -572,6 +576,7 @@ extern int gbl_sc_status_max_rows;
 extern int gbl_rep_process_pstack_time;
 extern int gbl_sql_recover_time;
 extern int gbl_legacy_requests_verbose;
+extern int gbl_long_request_ms;
 
 extern void set_snapshot_impl(snap_impl_enum impl);
 extern const char *snap_impl_str(snap_impl_enum impl);

@@ -486,6 +486,9 @@ enum CURTRAN_FLAGS { CURTRAN_RECOVERY = 0x00000001 };
 struct rawnodestats {
     unsigned opcode_counts[MAXTYPCNT];
     unsigned blockop_counts[NUM_BLOCKOP_OPCODES];
+    unsigned sql_queries_cdb2api;
+    unsigned sql_queries_comdb2api;
+    unsigned sql_queries_converted;
     unsigned sql_queries;
     unsigned sql_steps;
     unsigned sql_rows;
@@ -522,6 +525,9 @@ struct summary_nodestats {
     unsigned serial;   /* serial sql */
 
     unsigned sql_queries;
+    unsigned sql_queries_cdb2api;
+    unsigned sql_queries_comdb2api;
+    unsigned sql_queries_converted;
     unsigned sql_steps;
     unsigned sql_rows;
     double svc_time;
@@ -1713,7 +1719,6 @@ extern pthread_mutex_t
     gbl_sc_lock; /* used by schema change to protect globals */
 extern int gbl_blob_maxage;
 extern int gbl_blob_lose_debug;
-extern int gbl_sqlflush_freq;
 extern unsigned gbl_max_blob_cache_bytes;
 extern int gbl_blob_vb;
 extern long n_qtrap;

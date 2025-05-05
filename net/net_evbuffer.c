@@ -166,7 +166,7 @@ static pthread_t dist_thd;
 static struct event_base *dist_base;
 static struct timeval dist_tick;
 
-#define NUM_APPSOCK_RD 4
+#define NUM_APPSOCK_RD 8
 static pthread_t appsock_thd[NUM_APPSOCK_RD];
 static struct event_base *appsock_base[NUM_APPSOCK_RD];
 static struct timeval appsock_tick[NUM_APPSOCK_RD];
@@ -410,6 +410,7 @@ struct net_dispatch_info {
     const char *who;
     struct event_base *base;
     struct timeval *tick;
+    int priority;
 };
 
 struct user_msg_info {
@@ -470,8 +471,9 @@ static void *do_pstack(void *arg)
 
 #define timeval_to_ms(x) x.tv_sec * 1000 + x.tv_usec / 1000
 int gbl_timer_warn_interval = 1500; //msec. To disable check, set to 0.
-int gbl_timer_pstack_interval =  5 * 60; //sec. To disable pstack, but keep monitoring, set to 0.
-extern struct timeval last_timer_pstack;
+int gbl_timer_pstack_threshold =  5000; //msec.
+int gbl_timer_pstack_interval =  30 * 60; //sec. To disable pstack, but keep monitoring, set to 0.
+extern struct timeval last_pstack_time;
 static struct timeval last_timer_check;
 void check_timers(void)
 {
@@ -489,28 +491,28 @@ void check_timers(void)
     ms = timeval_to_ms(diff);
     if (ms >= gbl_timer_warn_interval) {
         logmsg(LOGMSG_WARN, "DELAYED TIMER CHECK:%dms\n", ms);
-        need_pstack = 1;
+        if (ms > gbl_timer_pstack_threshold) need_pstack = 1;
     }
 
     timersub(&now, &timer_tick, &diff);
     ms = timeval_to_ms(diff);
     if (ms >= gbl_timer_warn_interval) {
         logmsg(LOGMSG_WARN, "LONG TIMER TICK:%dms\n", ms);
-        need_pstack = 1;
+        if (ms > gbl_timer_pstack_threshold) need_pstack = 1;
     }
 
     timersub(&now, &fdb_tick, &diff);
     ms = timeval_to_ms(diff);
     if (ms >= gbl_timer_warn_interval) {
         logmsg(LOGMSG_WARN, "LONG FDB TICK:%dms\n", ms);
-        need_pstack = 1;
+        if (ms > gbl_timer_pstack_threshold) need_pstack = 1;
     }
 
     timersub(&now, &dist_tick, &diff);
     ms = timeval_to_ms(diff);
     if (ms >= gbl_timer_warn_interval) {
         logmsg(LOGMSG_WARN, "LONG DIST TICK:%dms\n", ms);
-        need_pstack = 1;
+        if (ms > gbl_timer_pstack_threshold) need_pstack = 1;
     }
 
     int thds = dedicated_appsock ? NUM_APPSOCK_RD : 0;
@@ -518,13 +520,13 @@ void check_timers(void)
         timersub(&now, &appsock_tick[i], &diff);
         ms = timeval_to_ms(diff);
         if (ms < gbl_timer_warn_interval) continue;
-        logmsg(LOGMSG_WARN, "LONG APPSOCK TICK:%dms %p\n", ms, (void*) appsock_thd[i]);
-        need_pstack = 1;
+        logmsg(LOGMSG_WARN, "LONG APPSOCK TICK:%dms id:%d thd:%p\n", ms, i, (void*) appsock_thd[i]);
+        if (ms > gbl_timer_pstack_threshold) need_pstack = 1;
     }
 
     last_timer_check = now;
     if (!need_pstack) return;
-    timersub(&now, &last_timer_pstack, &diff);
+    timersub(&now, &last_pstack_time, &diff);
     if (gbl_timer_pstack_interval == 0 || diff.tv_sec < gbl_timer_pstack_interval) return;
     logmsg(LOGMSG_WARN, "%s: Last pstack:%lds. Generating pstack\n", __func__, diff.tv_sec);
     pthread_t t;
@@ -536,15 +538,16 @@ static __thread struct event_base *current_base;
 static void *net_dispatch(void *arg)
 {
     struct net_dispatch_info *n = arg;
-    comdb2_name_thread(n->who);
-
-    current_base = n->base;
-    struct event *ev = event_new(n->base, -1, EV_PERSIST, event_tick, n);
-    struct timeval one = {1, 0};
-
     ENABLE_PER_THREAD_MALLOC(n->who);
 
+    comdb2_name_thread(n->who);
+    current_base = n->base;
+
+    struct event *ev = event_new(n->base, -1, EV_PERSIST, event_tick, n);
+    struct timeval one = {1, 0};
+    if (n->priority) event_priority_set(ev, 0);
     event_add(ev, &one);
+
     if (start_callback) {
         start_callback(start_stop_callback_data);
     }
@@ -572,6 +575,7 @@ static void init_base_priority(pthread_t *t, struct event_base **bb, const char 
     info->who = who;
     info->base = *bb;
     info->tick = tick;
+    info->priority = priority;
     Pthread_create(t, NULL, net_dispatch, info);
     Pthread_detach(*t);
 }
@@ -3426,7 +3430,8 @@ static void setup_bases(void)
             gettimeofday(&appsock_tick[i], NULL);
             char thdname[16];
             snprintf(thdname, sizeof(thdname), "appsock:%d", i);
-            init_base_priority(&appsock_thd[i], &appsock_base[i], strdup(thdname), 2, &appsock_tick[i]);
+            //priorities: 0 => timer-tick;  1 => free-connection;  2 => process-connection
+            init_base_priority(&appsock_thd[i], &appsock_base[i], strdup(thdname), 3, &appsock_tick[i]);
         }
     } else {
         for (int i = 0; i < NUM_APPSOCK_RD; ++i) {
