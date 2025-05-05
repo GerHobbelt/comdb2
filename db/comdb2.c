@@ -657,8 +657,6 @@ int gbl_berkdb_verify_skip_skipables = 0;
 
 int gbl_berkdb_epochms_repts = 0;
 
-int gbl_disable_sql_dlmalloc = 0;
-
 int gbl_decimal_rounding = DEC_ROUND_HALF_EVEN;
 int gbl_sparse_lockerid_map = 1;
 int gbl_inplace_blobs = 1;
@@ -776,6 +774,7 @@ int gbl_stable_rootpages_test = 0;
 /* Only allows the ability to enable: must be enabled on a session via 'set' */
 int gbl_allow_incoherent_sql = 0;
 
+char *gbl_iam_dbname = NULL;
 char *gbl_dbdir = NULL;
 int gbl_backup_logfiles = 0;
 static int gbl_backend_opened = 0;

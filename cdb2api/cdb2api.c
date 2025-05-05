@@ -484,6 +484,10 @@ static void do_init_once(void)
     if (cdb2db_dbnum_override) {
         COMDB2DB_NUM_OVERRIDE = atoi(cdb2db_dbnum_override);
     }
+    char *min_retries = getenv("COMDB2_CONFIG_MIN_RETRIES");
+    if (min_retries) {
+        MIN_RETRIES = atoi(min_retries);
+    }
 }
 
 /* if sqlstr is a read stmt will return 1 otherwise return 0
@@ -3167,7 +3171,7 @@ static int cdb2_send_query(cdb2_hndl_tp *hndl, cdb2_hndl_tp *event_hndl,
     }
 
     int n_features = 0;
-    int features[10]; // Max 10 client features??
+    int features[20]; // Max 20 client features??
     CDB2QUERY query = CDB2__QUERY__INIT;
     CDB2SQLQUERY sqlquery = CDB2__SQLQUERY__INIT;
     CDB2SQLQUERY__Snapshotinfo snapshotinfo;
@@ -3276,6 +3280,9 @@ static int cdb2_send_query(cdb2_hndl_tp *hndl, cdb2_hndl_tp *event_hndl,
 
     if (hndl && (hndl->flags & CDB2_REQUIRE_FASTSQL) != 0) {
         features[n_features++] = CDB2_CLIENT_FEATURES__REQUIRE_FASTSQL;
+    }
+    if (hndl && (hndl->flags & CDB2_ALLOW_INCOHERENT) != 0) {
+        features[n_features++] = CDB2_CLIENT_FEATURES__ALLOW_INCOHERENT;
     }
 
     if (n_features) {

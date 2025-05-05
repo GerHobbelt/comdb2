@@ -673,6 +673,20 @@ void clear_session_tbls(struct sqlclntstate *);
 void clear_participants(struct sqlclntstate *);
 int add_participant(struct sqlclntstate *, const char *dbname, const char *tier);
 
+struct features {
+    unsigned have_ssl : 1;
+    unsigned have_sqlite_fmt : 1;
+    unsigned allow_incoherent : 1;
+    unsigned skip_intrans_results : 1;
+    unsigned flat_col_vals : 1;
+    unsigned request_fp : 1;
+    unsigned require_fastsql : 1;
+    unsigned can_redirect_fdb : 1;
+    unsigned allow_master_exec : 1;
+    unsigned allow_master_dbinfo : 1;
+    unsigned queue_me : 1;
+};
+
 /* Client specific sql state */
 struct sqlclntstate {
     struct thdpool *pPool;     /* When null, the default SQL thread pool is
@@ -1036,6 +1050,8 @@ struct sqlclntstate {
     unsigned verify_dbstore : 1;
     unsigned multiline : 1;
     int tail_offset;
+
+    struct features features;
 };
 typedef struct sqlclntstate sqlclntstate;
 
@@ -1346,11 +1362,17 @@ int handle_sql_commitrollback(struct sqlthdstate *thd,
 int replicant_is_able_to_retry(struct sqlclntstate *clnt);
 void sql_get_query_id(struct sql_thread *thd);
 
-void sql_dlmalloc_init(void);
+#ifdef PER_THREAD_MALLOC
 int sql_mem_init(void *);
 int sql_mem_init_with_save(void *, void **);
 void sql_mem_shutdown(void *);
 void sql_mem_shutdown_and_restore(void *, void **);
+#else
+#define sql_mem_init(...)
+#define sql_mem_init_with_save(...)
+#define sql_mem_shutdown(...)
+#define sql_mem_shutdown_and_restore(...)
+#endif
 
 int sqlite3_open_serial(const char *filename, sqlite3 **, struct sqlthdstate *);
 int sqlite3_close_serial(sqlite3 **);

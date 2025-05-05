@@ -340,11 +340,6 @@ REGISTER_TUNABLE("disable_seekscan_optimization", "Disables SEEKSCAN optimizatio
                  &gbl_disable_seekscan_optimization, NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("disable_skip_rows", NULL, TUNABLE_BOOLEAN, &gbl_disable_skip_rows, READONLY | NOARG, NULL, NULL, NULL,
                  NULL);
-REGISTER_TUNABLE("disable_sql_dlmalloc",
-                 "If set, will use default system malloc for SQL state "
-                 "machines. By default, each thread running SQL gets a "
-                 "dedicated memory pool. (Default: off)",
-                 TUNABLE_BOOLEAN, &gbl_disable_sql_dlmalloc, READONLY | NOARG, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("disable_tagged_api", "Disables 'enable_tagged_api'",
                  TUNABLE_BOOLEAN, &gbl_disable_tagged_api, NOARG, NULL, NULL,
                  NULL, NULL);
@@ -487,14 +482,11 @@ REGISTER_TUNABLE("disable_selectv_range_check",
                  "Disables 'enable_selectv_range_check'", TUNABLE_BOOLEAN,
                  &gbl_selectv_rangechk, INVERSE_VALUE | NOARG, NULL, NULL, NULL,
                  NULL);
-/*
 REGISTER_TUNABLE("enable_snapshot_isolation",
                  "Enable to allow SNAPSHOT level transactions to run against "
                  "the database. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_snapisol, READONLY, NULL, NULL, NULL,
                  NULL);
-*/
-
 REGISTER_TUNABLE("set_snapshot_impl",
                  "Changes the default snapshot implementation "
                  "*without enabling snapshot* (default 'modsnap')",
@@ -2514,4 +2506,9 @@ REGISTER_TUNABLE("genshard_verbose",
                  TUNABLE_BOOLEAN, &gbl_gen_shard_verbose, 0, NULL, NULL, NULL,
                  NULL);
 REGISTER_TUNABLE("legacy_verbose", "Log all legacy (opcode+old sql) requests (default: off)", TUNABLE_BOOLEAN, &gbl_legacy_requests_verbose, 0, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("iam_dbname",
+                 "override dbname for IAM",
+                 TUNABLE_STRING, &gbl_iam_dbname, READEARLY | READONLY, NULL,
+                 NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */
