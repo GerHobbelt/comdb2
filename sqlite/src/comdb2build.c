@@ -1501,6 +1501,17 @@ static int _get_integer(Token *tok, int32_t *oInt)
     return 0;
 }
 
+static int _get_retention(Token *tok, int32_t *oRetention)
+{
+    if (_get_integer(tok, oRetention)) {
+        return -1;
+    } else if (*oRetention > MAX_RETENTION) {
+        return -1;
+    } else {
+        return 0;
+    }
+}
+
 static int comdb2GetTimePartitionParams(Parse* pParse, Token *period,
                                         Token *retention, Token *start,
                                         int32_t *oPeriod, int32_t *oRetention,
@@ -1523,7 +1534,7 @@ static int comdb2GetTimePartitionParams(Parse* pParse, Token *period,
         return -1;
     }
 
-    if (_get_integer(retention, oRetention)) {
+    if (_get_retention(retention, oRetention)) {
         setError(pParse, SQLITE_MISUSE, "Invalid retention");
         return -1;
     }
@@ -1550,7 +1561,7 @@ static int comdb2GetManualPartitionParams(Parse* pParse, Token *retention,
                                           Token *start, int32_t *oRetention,
                                           int32_t *oStart)
 {
-    if (_get_integer(retention, oRetention)) {
+    if (_get_retention(retention, oRetention)) {
         setError(pParse, SQLITE_MISUSE, "Invalid manual retention");
         return -1;
     }
@@ -3064,8 +3075,8 @@ void comdb2WriteTransaction(Parse *pParse)
 
     struct sqlclntstate *clnt = get_sql_clnt();
     if (clnt && clnt->is_readonly) {
-      setError(pParse, SQLITE_READONLY, "connection/database in read-only mode");
-      return;
+        setError(pParse, SQLITE_READONLY, "connection/database in read-only mode");
+        return;
     }
 
     pParse->write = 1;
@@ -7141,6 +7152,12 @@ void comdb2putTunable(Parse *pParse, Token *name1, Token *name2, Token *value)
 
     if (comdb2AuthenticateUserOp(pParse))
         return;
+
+    struct sqlclntstate *clnt = get_sql_clnt();
+    if (clnt && clnt->is_readonly) {
+        setError(pParse, SQLITE_READONLY, "connection/database in read-only mode");
+        return;
+    }
 
     char t_name[160];
     char *t_name1;
