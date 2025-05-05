@@ -49,7 +49,7 @@
 #include <rtcpu.h>
 #include <list.h>
 #include <segstr.h>
-#include <plhash.h>
+#include <plhash_glue.h>
 #include <memory_sync.h>
 
 #include <epochlib.h>
@@ -2274,6 +2274,47 @@ out:
     assert(logger->have_fingerprint == 0);
     assert(logger->error_code == 0);
     assert(logger->path == 0);
+}
+
+hash_t *create_query_hash();
+void clear_query_hash(hash_t *h, int destroy);
+void reqlog_begin_subrequest(struct reqlogger *logger)
+{
+    reqlog_set_startprcs(logger, comdb2_time_epochus());
+    struct sql_thread *thd = pthread_getspecific(query_info_key);
+    if (thd != NULL) {
+        thd->in_subrequest = 1;
+        listc_init(&thd->query_stats_subrequest, offsetof(struct query_path_component, lnk));
+        if (thd->query_hash_subrequest == NULL)
+            thd->query_hash_subrequest = create_query_hash();
+    }
+}
+
+void reqlog_end_subrequest(struct reqlogger *logger, int rc, const char *callfunc, int line)
+{
+    const char *request_type = logger->request_type;
+    int opcode = logger->opcode;
+    struct ireq *iq = logger->iq;
+    struct sqlclntstate *clnt = logger->clnt;
+
+    reqlog_end_request(logger, rc, callfunc, line);
+    reqlog_start_request(logger);
+    struct sql_thread *thd = pthread_getspecific(query_info_key);
+    if (thd != NULL) {
+        thd->in_subrequest = 0;
+        listc_init(&thd->query_stats_subrequest, offsetof(struct query_path_component, lnk));
+        clear_query_hash(thd->query_hash_subrequest, 0);
+    }
+
+    if (opcode == OP_SQL && clnt != NULL) {
+        logger->startus = logger->startprcsus = clnt->enque_timeus;
+    } else if (iq != NULL) {
+        logger->startus = logger->startprcsus = iq->nowus;
+    }
+    logger->request_type = request_type;
+    logger->opcode = opcode;
+    logger->iq = iq;
+    logger->clnt = clnt;
 }
 
 /* this is meant to be called by only 1 thread, will need locking if
