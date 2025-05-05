@@ -553,6 +553,7 @@ int gbl_lowpri_snapisol_sessions = 0;
 int gbl_support_sock_luxref = 1;
 int gbl_allow_user_schema;
 int gbl_disable_legacy_queues = 1;
+int64_t gbl_legacy_requests = 0;
 
 struct quantize *q_min;
 struct quantize *q_hour;
@@ -2765,6 +2766,8 @@ struct dbenv *newdbenv(char *dbname, char *lrlname)
         logmsg(LOGMSG_FATAL, "Failure in reading lrl file(s)\n");
         exit(1);
     }
+
+    run_init_plugins(COMDB2_PLUGIN_INITIALIZER_LRL);
 
     logmsg(LOGMSG_INFO, "database %s starting\n", dbenv->envname);
 
