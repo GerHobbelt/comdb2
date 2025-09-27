@@ -2220,6 +2220,14 @@ int process_set_commands(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_query)
                 } else {
                     clnt->multiline = 1;
                 }
+            } else if (strncasecmp(sqlstr, "continue_on_verify_error", 24) == 0) {
+                sqlstr += 24;
+                sqlstr = skipws(sqlstr);
+                if (strncasecmp(sqlstr, "off", 3) == 0) {
+                    clnt->set_continue_on_chunk_verify_error = 0;
+                } else {
+                    clnt->set_continue_on_chunk_verify_error = 1;
+                }
             } else {
                 rc = ii + 1;
             }
@@ -2398,6 +2406,7 @@ newsql_loop_result newsql_loop(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_quer
         bzero(&clnt->log_effects, sizeof(clnt->log_effects));
         bzero(&clnt->chunk_effects, sizeof(clnt->chunk_effects));
         clnt->had_errors = 0;
+        clnt->continued_on_chunk_verify_error = 0;
         clnt->ctrl_sqlengine = SQLENG_NORMAL_PROCESS;
     }
     if (clnt->dbtran.mode < TRANLEVEL_SOSQL) {
@@ -2470,6 +2479,8 @@ newsql_loop_result newsql_loop(struct sqlclntstate *clnt, CDB2SQLQUERY *sql_quer
 
     /* coherent  _or_ in middle of transaction */
     if ((!incoh_reject(clnt->admin, thedb->bdb_env) || clnt->features.allow_incoherent) || clnt->ctrl_sqlengine != SQLENG_NORMAL_PROCESS) {
+        comdb2uuid(clnt->unifieduuid);
+
         return NEWSQL_SUCCESS;
     }
     if (gbl_incoherent_clnt_wait > 0) {
@@ -2519,6 +2530,7 @@ void free_newsql_appdata(struct sqlclntstate *clnt)
 }
 
 void *(*externalMakeNewsqlAuthData)(void *, CDB2SQLQUERY__IdentityBlob *id) = NULL;
+void (*externalFreeNewsqlAuthData)(void *) = NULL;
 
 static void *newsql_get_authdata(struct sqlclntstate *clnt)
 {
@@ -2536,10 +2548,19 @@ static void *newsql_get_authdata(struct sqlclntstate *clnt)
 
     }
     if (clnt->authdata) {
-        free(clnt->authdata);
+        externalFreeNewsqlAuthData(clnt->authdata);
         clnt->authdata = NULL;
     }
     return NULL;
+}
+
+static int newsql_free_authdata(struct sqlclntstate *clnt)
+{
+    if (clnt->authdata) {
+        externalFreeNewsqlAuthData(clnt->authdata);
+        clnt->authdata = NULL;
+    }
+    return 0;
 }
 
 void newsql_setup_clnt(struct sqlclntstate *clnt)

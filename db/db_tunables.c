@@ -510,6 +510,7 @@ extern int gbl_physrep_reconnect_interval;
 extern int gbl_physrep_shuffle_host_list;
 extern int gbl_physrep_ignore_queues;
 extern int gbl_physrep_max_rollback;
+extern int gbl_physrep_pollms;
 
 /* source-name / host is from lrl */
 extern char *gbl_physrep_source_dbname;
@@ -599,7 +600,7 @@ int64_t gbl_test_tunable_int64_limit = INT64_MAX;
 int64_t gbl_test_tunable_int64_signed_limit = INT64_MAX;
 
 int gbl_always_request_log_req = 0;
-int gbl_nudge_replication_when_idle = 0;
+int gbl_nudge_replication_when_idle = 100;
 
 int parse_int64(const char *value, int64_t *num);
 

@@ -1907,6 +1907,8 @@ REGISTER_TUNABLE("physrep_ignore_queues", "Don't replicate queues.", TUNABLE_BOO
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("physrep_max_rollback", "Maximum logs physrep can rollback. (Default: 0)", TUNABLE_INTEGER,
                  &gbl_physrep_max_rollback, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("physrep_pollms", "Physical replicant poll interval in milliseconds. (Default: 200)", TUNABLE_INTEGER,
+                 &gbl_physrep_pollms, 0, NULL, NULL, NULL, NULL);
 
 /* reversql-sql */
 REGISTER_TUNABLE("revsql_allow_command_execution",
@@ -2377,6 +2379,10 @@ REGISTER_TUNABLE("merge_table_enabled",
                  TUNABLE_BOOLEAN, &gbl_merge_table_enabled, 0, NULL, NULL,
                  NULL, NULL);
 
+REGISTER_TUNABLE("allow_old_authn", "Reuse old successful authentication for the connection",
+                 TUNABLE_BOOLEAN, &gbl_allow_old_authn, NOARG | READEARLY,
+                 NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("externalauth", NULL, TUNABLE_BOOLEAN, &gbl_uses_externalauth, NOARG | READEARLY,
                  NULL, NULL, NULL, NULL);
 
@@ -2561,5 +2567,7 @@ REGISTER_TUNABLE("iam_dbname",
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("queue_nonodh_scan_limit", "For comdb2_queues, stop queue scan at this depth (Default: 10000)", TUNABLE_INTEGER, &gbl_nonodh_queue_scan_limit, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("always_request_log_req", "Always request the next log record on replicant if there is a gap (default: off)", TUNABLE_BOOLEAN, &gbl_always_request_log_req, 0, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("nudge_replication_when_idle", "If we haven't seen any replication events in a while, request some (default: off)", TUNABLE_BOOLEAN, &gbl_nudge_replication_when_idle, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("nudge_replication_when_idle",
+                 "If we haven't seen any replication events in a while, request some (default: 100)", TUNABLE_INTEGER,
+                 &gbl_nudge_replication_when_idle, 0, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

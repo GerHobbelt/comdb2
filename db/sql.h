@@ -322,6 +322,17 @@ typedef struct sqlclntstate_fdb {
     int failed_heartbeats; /* used to signal failed communication with remotes */
 } sqlclntstate_fdb_t;
 
+enum ucancel_type {
+    UCANCEL_INV = 0,
+    UCANCEL_ALL = 1,    /* both queued and running */
+    UCANCEL_RUN = 2,    /* running only */
+    UCANCEL_QUE = 4,    /* queued only */
+    UCANCEL_CNO = 8,    /* filter by cnonce */
+    UCANCEL_FPT = 16    /* filter by fp */
+};
+
+int ucancel_sql_statements(enum ucancel_type type, char *uuid);
+
 CurRange *currange_new();
 #define CURRANGEARR_INIT_CAP 2
 void currangearr_init(CurRangeArr *arr);
@@ -490,6 +501,7 @@ struct plugin_callbacks {
     plugin_func *local_check; /* newsql_local_check_evbuffer */
     plugin_func *peer_check; /* newsql_peer_check_evbuffer */
     auth_func *get_authdata; /* newsql_get_authdata */
+    plugin_func *free_authdata; /* newsql_free_authdata */
     api_type_func *api_type; /* newsql_api_type */
 
     /* Optional */
@@ -556,6 +568,7 @@ struct plugin_callbacks {
         make_plugin_callback(clnt, name, local_check);                         \
         make_plugin_callback(clnt, name, peer_check);                          \
         make_plugin_callback(clnt, name, get_authdata);                        \
+        make_plugin_callback(clnt, name, free_authdata);                       \
         make_plugin_callback(clnt, name, api_type);                            \
         make_plugin_optional_null(clnt, count);                                \
         make_plugin_optional_null(clnt, type);                                 \
@@ -586,6 +599,7 @@ int clr_high_availability(struct sqlclntstate *);
 uint64_t get_client_starttime(struct sqlclntstate *);
 int get_client_retries(struct sqlclntstate *);
 void *get_authdata(struct sqlclntstate *);
+void free_authdata(struct sqlclntstate *);
 char *clnt_tzname(struct sqlclntstate *, sqlite3_stmt *);
 
 struct clnt_ddl_context {
@@ -745,6 +759,7 @@ struct sqlclntstate {
 
     struct rawnodestats *rawnodestats;
 
+    uuid_t      unifieduuid;         /* assigned to any statement running, used for canceling live sql */
     osqlstate_t osql;                /* offload sql state is kept here */
     enum ctrl_sqleng ctrl_sqlengine; /* use to mark a begin/end out of state,
                                         see enum ctrl_sqleng
@@ -763,11 +778,9 @@ struct sqlclntstate {
     int n_cmp_idx;
     sampled_idx_t *sampled_idx_tbl;
 
-    pthread_t debug_sqlclntstate;
     int last_check_time;
     int query_timeout;
     int statement_timedout;
-    struct conninfo conn;
 
     uint8_t heartbeat;
     uint8_t ready_for_heartbeats;
@@ -1010,6 +1023,8 @@ struct sqlclntstate {
     unsigned return_long_column_names : 1; // if 0 then tunable decides
     unsigned in_local_cache : 1;
     unsigned evicted_appsock : 1;
+    unsigned set_continue_on_chunk_verify_error : 1; // set stmt enabled
+    unsigned continued_on_chunk_verify_error : 1;    // did we continue on verify error?
 
     unsigned num_adjusted_column_name_length; // does not consider fastsql
     char **adjusted_column_names;
@@ -1070,6 +1085,7 @@ struct sqlclntstate {
     int tail_offset;
 
     struct features features;
+    int discard_this; /* set by a cancel() trap, complement thd->stop_this_statement for queued request */
 };
 typedef struct sqlclntstate sqlclntstate;
 
@@ -1340,6 +1356,8 @@ struct connection_info {
     enum connection_state state_int;
     int64_t in_transaction;
     int64_t in_local_cache;
+    char *uuid;
+    int64_t is_canceled;
 };
 
 /* makes master swing verbose */
@@ -1531,7 +1549,6 @@ response_func write_response;
 response_func read_response;
 plugin_func get_fileno;
 
-int sql_write_sbuf(SBUF2 *, const char *, int);
 int typestr_to_type(const char *ctype);
 int column_count(struct sqlclntstate *, sqlite3_stmt *);
 int sqlite_error(struct sqlclntstate *, sqlite3_stmt *, const char **errstr);
@@ -1723,6 +1740,8 @@ void wait_for_transactions(void);
 int osql_test_create_genshard(struct schema_change_type *sc, char **errmsg, int nshards,
                               char **dbnames, uint32_t numcols, char **columns, char **shardnames);
 int osql_test_remove_genshard(struct schema_change_type *sc, char **errmsg);
+
+void cancel_connections(int only_queued, uuid_t filter_fp);
 
 struct sp_tmptbl {
     pthread_mutex_t lk;
