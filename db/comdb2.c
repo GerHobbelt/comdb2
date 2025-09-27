@@ -114,7 +114,6 @@ void berk_memp_sync_alarm_ms(int);
 #include <autoanalyze.h>
 #include <sqlglue.h>
 
-#include "dbdest.h"
 #include "intern_strings.h"
 #include "bb_oscompat.h"
 #include "comdb2uuid.h"
@@ -246,6 +245,7 @@ int gbl_authentication_cache_ageout = 900;
 int gbl_authorization_cache_ageout = 600;
 int gbl_cache_authz_perms = 1;
 int gbl_iam_verbosity = 0;
+int gbl_use_sp_resource = 0;
 int gbl_upd_key;
 unsigned long long gbl_sqltick;
 int gbl_watchdog_watch_threshold = 60;
@@ -810,6 +810,7 @@ int gbl_clean_exit_on_sigterm = 1;
 
 int gbl_is_physical_replicant;
 int gbl_server_admin_mode = 0;
+int gbl_debug_always_reload_schemas_after_recovery = 0;
 
 comdb2_tunables *gbl_tunables; /* All registered tunables */
 int init_gbl_tunables();

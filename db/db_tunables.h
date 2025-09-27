@@ -2183,6 +2183,9 @@ REGISTER_TUNABLE("abort_on_missing_ufid", "Abort if ufid is not found.  (Default
 REGISTER_TUNABLE("ufid_dbreg_test", "Enable ufid-dbreg test.  (Default: off)", TUNABLE_BOOLEAN, &gbl_ufid_dbreg_test,
                  EXPERIMENTAL | INTERNAL | READONLY, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("debug_dbreg_lazy_id_sleep", "Sleep in dbreg_lazy_id (Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_debug_dbreg_lazy_id_sleep, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("javasp_early_release", "Release javasp-lock before distributed commit.  (Default: on)",
                  TUNABLE_BOOLEAN, &gbl_javasp_early_release, EXPERIMENTAL | INTERNAL, 
                  NULL, NULL, NULL, NULL);
@@ -2431,6 +2434,9 @@ REGISTER_TUNABLE("authorization_cache_ageout", "Max age of authorization cache (
 REGISTER_TUNABLE("iam_usermetric_verbosity", "IAM user metric verbosity [Default: 0 (off)]", TUNABLE_INTEGER,
                  &gbl_iam_verbosity, 0, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("iam_allow_sp_resource", "Allow stored-procedure as IAM resource [Default: 0 (off)]", TUNABLE_INTEGER,
+                 &gbl_use_sp_resource, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE("track_weighted_queue_metrics_separately",
                  "When on, report both average and weighted average queue metrics;"
                  "When off, report only weighted average queue metrics "
@@ -2570,4 +2576,11 @@ REGISTER_TUNABLE("always_request_log_req", "Always request the next log record o
 REGISTER_TUNABLE("nudge_replication_when_idle",
                  "If we haven't seen any replication events in a while, request some (default: 100)", TUNABLE_INTEGER,
                  &gbl_nudge_replication_when_idle, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("debug_always_reload_schemas_after_recovery",
+                 "If set, always reload schema information after recovery. This is used to "
+                 "reproduce a deadlock where post-election recovery and a dbinfo2 query "
+                 "acquire the schema lock and bdb lock in opposite orders. "
+                 "(Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_debug_always_reload_schemas_after_recovery, 0, NULL, NULL, NULL, NULL);
+
 #endif /* _DB_TUNABLES_H */

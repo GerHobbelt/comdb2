@@ -1644,6 +1644,7 @@ extern int gbl_authentication_cache_ageout;
 extern int gbl_authorization_cache_ageout;
 extern int gbl_cache_authz_perms;
 extern int gbl_iam_verbosity;
+extern int gbl_use_sp_resource;
 extern char* gbl_foreign_metadb;
 extern char* gbl_foreign_metadb_class;
 extern char* gbl_foreign_metadb_config;
@@ -1935,6 +1936,8 @@ extern int gbl_logical_live_sc;
 
 extern int gbl_test_io_errors;
 extern uint64_t gbl_sc_headroom;
+extern int gbl_debug_always_reload_schemas_after_recovery;
+
 /* init routines */
 int appsock_init(void);
 int thd_init(void);
