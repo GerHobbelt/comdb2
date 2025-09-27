@@ -38,7 +38,7 @@ public class Comdb2PreparedStatement extends Comdb2Statement implements Prepared
     String sql;
     protected int[] types;
 
-    /* my own bound paramters */
+    /* my own bound parameters */
     protected HashMap<Integer, Cdb2BindValue> intBindVars = new HashMap<Integer, Cdb2BindValue>();
     protected List<HashMap<Integer, Cdb2BindValue>> batch;
 
