@@ -2858,9 +2858,32 @@ retry:
         goto after_callback;
     }
 
+    /* Validate hdr.type */
+    switch (hdr.type) {
+    case RESPONSE_HEADER__SQL_RESPONSE:
+    case RESPONSE_HEADER__SQL_RESPONSE_HEARTBEAT:
+    case RESPONSE_HEADER__SQL_RESPONSE_PING:
+    case RESPONSE_HEADER__SQL_RESPONSE_SSL:
+    case RESPONSE_HEADER__SQL_RESPONSE_TRACE:
+    case RESPONSE_HEADER__SQL_EFFECTS:
+    case RESPONSE_HEADER__DISTTXN_RESPONSE:
+    case RESPONSE_HEADER__SQL_RESPONSE_RAW:
+    case RESPONSE_HEADER__DBINFO_RESPONSE:
+        break;
+    default: {
+        fprintf(stderr, "%s: invalid response type, %d\n", __func__, hdr.type);
+        rc = -1;
+        goto after_callback;
+    }
+    }
+
     if (hdr.length == 0) {
-        debugprint("hdr length (0) from mach %s - going to retry\n",
-                   hndl->hosts[hndl->connected_host]);
+        if (hdr.type != RESPONSE_HEADER__SQL_RESPONSE_HEARTBEAT) {
+            fprintf(stderr, "%s: invalid response type for 0-length %d\n", __func__, hdr.type);
+            rc = -1;
+            goto after_callback;
+        }
+        debugprint("hdr length (0) from mach %s - going to retry\n", hndl->hosts[hndl->connected_host]);
 
         /* If we have an AT_RECEIVE_HEARTBEAT event, invoke it now. */
         cdb2_event *e = NULL;
@@ -3398,7 +3421,7 @@ after_callback:
 static int is_retryable(int err_val)
 {
     switch (err_val) {
-    case CDB2ERR_CHANGENODE:
+    case CDB2ERR_NOTDURABLE:
     case CDB2ERR_NOMASTER:
     case CDB2ERR_TRAN_IO_ERROR:
     case CDB2ERR_REJECTED:
@@ -4466,10 +4489,10 @@ static inline void consume_previous_query(cdb2_hndl_tp *hndl)
     hndl->rows_read = 0;
 }
 
-#define GOTO_RETRY_QUERIES()                                                   \
-    do {                                                                       \
-        debugprint("goto retry_queries\n");                                    \
-        goto retry_queries;                                                    \
+#define GOTO_RETRY_QUERIES()                                                                                           \
+    do {                                                                                                               \
+        debugprint("goto retry_queries\n");                                                                            \
+        goto retry_queries;                                                                                            \
     } while (0);
 
 /*

@@ -2348,6 +2348,9 @@ static int _fdb_send_open_retries(sqlclntstate *clnt, fdb_t *fdb,
                                             coordinator_tier, clnt->dist_timestamp,
                                             trans->fcon.sb);
                 } else {
+                    if (fdb->server_version >= FDB_VER_AUTH && (clnt->authdata = get_authdata(clnt)) && gbl_fdb_auth_enabled) {
+                        tran_flags = tran_flags | FDB_MSG_TRANS_AUTH;
+                    }
                     rc = fdb_send_begin(clnt, msg, trans, clnt->dbtran.mode, tran_flags, trans->fcon.sb);
                 }
                 if (rc == FDB_NOERR) {
@@ -6324,6 +6327,9 @@ static int _running_dist_ddl(struct schema_change_type *sc, char **errmsg, uint3
 
     *errmsg = "";
 
+    /* Fix this, for now disable 2pc if its a DDL */
+    clnt->use_2pc = 0;
+
     pushes = (fdb_push_connector_t**)alloca(nshards * sizeof(fdb_push_connector_t*));
     bzero(pushes, nshards * sizeof(fdb_push_connector_t*));
 
@@ -6342,7 +6348,7 @@ static int _running_dist_ddl(struct schema_change_type *sc, char **errmsg, uint3
 
     /* "begin" */
     clnt->in_client_trans = 1;
-    rc = osql_sock_start(clnt, OSQL_SOCK_REQ, 0);
+    rc = osql_sock_start(clnt, OSQL_SOCK_REQ, 0, 0);
     if (rc) {
         logmsg(LOGMSG_ERROR, "Failed to start dtransaction rc %d\n", rc);
         goto setup_error;

@@ -111,7 +111,7 @@ REGISTER_TUNABLE("buffers_per_context", NULL, TUNABLE_INTEGER,
                  NULL);
 REGISTER_TUNABLE("bulk_import_validation_werror",
                  "Treat bulk import input validation warnings as errors. "
-                 "(Default: off)", TUNABLE_BOOLEAN,
+                 "(Default: on)", TUNABLE_BOOLEAN,
                  &gbl_bulk_import_validation_werror, 0, NULL, NULL, NULL,
                  NULL);
 /*
@@ -510,7 +510,7 @@ REGISTER_TUNABLE("enable_snapshot_isolation",
 REGISTER_TUNABLE("enable_serial_isolation",
                  "Enable to allow SERIALIZABLE level transactions to run against "
                  "the database. (Default: off)",
-                 TUNABLE_BOOLEAN, &gbl_serializable, READONLY, NULL, NULL, NULL,
+                 TUNABLE_BOOLEAN, &gbl_serializable, NOARG | READONLY, NULL, NULL, NULL,
                  NULL);
 REGISTER_TUNABLE("set_snapshot_impl",
                  "Changes the default snapshot implementation "
@@ -2343,6 +2343,12 @@ REGISTER_TUNABLE("sockbplog_sockpool",
 REGISTER_TUNABLE("replicant_retry_on_not_durable", "Replicant retries non-durable writes.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_replicant_retry_on_not_durable, 0, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("debug_force_non_durable", "Debug tunable which makes all commits not durable.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_debug_force_non_durable, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
+
+REGISTER_TUNABLE("hide_non_durable_rcode", "Hide non-durable rcode from clients.  (Default: on)", TUNABLE_BOOLEAN,
+                 &gbl_ignore_final_non_durable_retry, 0, NULL, NULL, NULL, NULL);
+
 REGISTER_TUNABLE(
     "lightweight_rename",
     "Replaces the ondisk file rename with an aliasing at llmeta level",
@@ -2501,9 +2507,11 @@ REGISTER_TUNABLE("timer_pstack_threshold",
                   TUNABLE_INTEGER, &gbl_timer_pstack_threshold, INTERNAL, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("timer_pstack_interval",
-                 "Skip another pstack within specified interval in secs (Default: 30mins [1800sec])",
+                 "Skip another pstack within specified interval in secs (Default: disabled)",
                  TUNABLE_INTEGER, &gbl_timer_pstack_interval, INTERNAL, NULL, NULL, NULL, NULL);
-
+REGISTER_TUNABLE("transactional_drop_plus_rename",
+                 "Allow dropping a table and then renaming a table to have the same name as the dropped table in a transaction (default on)",
+                 TUNABLE_BOOLEAN, &gbl_transactional_drop_plus_rename, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("transaction_grace_period",
                  "Time to wait for connections with pending transactions to go away on exit. (Default: 60)",
                  TUNABLE_INTEGER, &gbl_transaction_grace_period, 0, NULL, NULL, NULL, NULL);
@@ -2554,8 +2562,8 @@ REGISTER_TUNABLE("iam_dbname",
                  "override dbname for IAM",
                  TUNABLE_STRING, &gbl_iam_dbname, READEARLY | READONLY, NULL,
                  NULL, NULL, NULL);
-REGISTER_TUNABLE("inproc_conn_ttl", "Close in-process cached connections after this many seconds of inactivity (Default: 10s)",
-                 TUNABLE_INTEGER, &gbl_inproc_conn_ttl, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("comdb2_oplog_preserve_seqno", "Preserve max value of the seqno in llmeta", TUNABLE_BOOLEAN, &gbl_comdb2_oplog_preserve_seqno, INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("queue_nonodh_scan_limit", "For comdb2_queues, stop queue scan at this depth (Default: 10000)", TUNABLE_INTEGER, &gbl_nonodh_queue_scan_limit, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("always_request_log_req", "Always request the next log record on replicant if there is a gap (default: off)", TUNABLE_BOOLEAN, &gbl_always_request_log_req, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("nudge_replication_when_idle", "If we haven't seen any replication events in a while, request some (default: off)", TUNABLE_BOOLEAN, &gbl_nudge_replication_when_idle, 0, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

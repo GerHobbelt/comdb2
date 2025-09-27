@@ -42,6 +42,7 @@ extern int gbl_ddl_cascade_drop;
 extern int gbl_legacy_schema;
 extern int gbl_permit_small_sequences;
 extern int gbl_lightweight_rename;
+extern int gbl_transactional_drop_plus_rename;
 extern int gbl_gen_shard_verbose;
 extern int gbl_sc_protobuf;
 int gbl_view_feature = 1;
@@ -405,7 +406,10 @@ static int comdb2AuthenticateUserDDL(const char *tablename)
 {
      struct sqlclntstate *clnt = get_sql_clnt();
 
-     if (gbl_uses_externalauth && externalComdb2AuthenticateUserDDL && !clnt->admin) {
+     if (clnt->admin)
+         return SQLITE_OK;
+
+     if (gbl_uses_externalauth && externalComdb2AuthenticateUserDDL) {
          clnt->authdata = get_authdata(clnt);
 
          if (!clnt->authdata && clnt->secure && !gbl_allow_anon_id_for_spmux) {
@@ -452,7 +456,11 @@ static int comdb2AuthenticateUserDDL(const char *tablename)
 
 static int comdb2CheckOpAccess(void) {
     struct sqlclntstate *clnt = get_sql_clnt();
-    if (gbl_uses_externalauth && externalComdb2CheckOpAccess && !clnt->admin) {
+
+    if (clnt->admin)
+        return SQLITE_OK;
+
+    if (gbl_uses_externalauth && externalComdb2CheckOpAccess) {
          clnt->authdata = get_authdata(clnt);
          if (!clnt->authdata && clnt->secure && !gbl_allow_anon_id_for_spmux) {
              return reject_anon_id(clnt);
@@ -676,7 +684,7 @@ int comdb2SqlSchemaChange_tran(OpFunc *f)
     int rc = 0;
     int sentops = 0;
     int bdberr = 0;
-    osql_sock_start(clnt, OSQL_SOCK_REQ ,0);
+    osql_sock_start(clnt, OSQL_SOCK_REQ, 0, 0);
     comdb2SqlSchemaChange(f);
     if (clnt->dbtran.mode != TRANLEVEL_SOSQL) {
         rc = osql_shadtbl_process(clnt, &sentops, &bdberr, 0);
@@ -3018,13 +3026,22 @@ void sqlite3AlterRenameTable(Parse *pParse, Token *pSrcName, Token *pName)
         return;
     }
 
-
-    db = get_dbtable_by_name(newTable);
-    /* cannot rename to an existing table, unless we are removing an alias
-    */
-    if (db && !(gbl_lightweight_rename && db->sqlaliasname && (strncmp(db->sqlaliasname, table, MAXTABLELEN) == 0))) {
-        setError(pParse, SQLITE_ERROR, "New table name already exists");
+    if (gbl_transactional_drop_plus_rename && gbl_lightweight_rename) {
+        setError(pParse, SQLITE_MISUSE, "transactional_drop_plus_rename is not supported for lightweight_resume. Disable one of them.");
         return;
+    }
+
+    // If we are running with transactional_drop_plus_rename, then defer
+    // collision checking until later so that we can detect if the client
+    // dropped the table that it is trying to rename to in the same txn.
+    if (!gbl_transactional_drop_plus_rename) {
+        db = get_dbtable_by_name(newTable);
+        /* cannot rename to an existing table, unless we are removing an alias
+        */
+        if (db && !(gbl_lightweight_rename && db->sqlaliasname && (strncmp(db->sqlaliasname, table, MAXTABLELEN) == 0))) {
+            setError(pParse, SQLITE_ERROR, "New table name already exists");
+            return;
+        }
     }
 
     sc = new_schemachange_type();
@@ -7764,7 +7781,7 @@ int comdb2DeleteFromScHistory(char *tablename, uint64_t seed)
     struct sqlclntstate *clnt = get_sql_clnt();
     int rc = 0;
     if(!clnt->intrans) {
-        if ((rc = osql_sock_start(clnt, OSQL_SOCK_REQ, 0)) == 0)
+        if ((rc = osql_sock_start(clnt, OSQL_SOCK_REQ, 0, 0)) == 0)
             clnt->intrans = 1;
     }
     if (!rc)
