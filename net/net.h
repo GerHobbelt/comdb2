@@ -332,16 +332,6 @@ struct host_node_info {
 int net_get_nodes_info(netinfo_type *netinfo_ptr, int max_nodes,
                        struct host_node_info *out_nodes);
 
-struct net_host_stats {
-    int queue_size;
-};
-int net_get_host_stats(netinfo_type *netinfo_ptr, const char *host, struct net_host_stats *stat);
-
-struct net_stats {
-    int num_drops;
-};
-int net_get_stats(netinfo_type *netinfo_ptr, struct net_stats *stat);
-
 void net_cmd(netinfo_type *netinfo_ptr, char *line, int lline, int st, int op1);
 
 int net_get_host_network_usage(netinfo_type *netinfo_ptr, const char *host,
@@ -421,5 +411,6 @@ int disable_fdb_heartbeats_and_free(struct fdb_hbeats *);
 int enable_dist_heartbeats(struct dist_hbeats *);
 int disable_dist_heartbeats(struct dist_hbeats *);
 int disable_dist_heartbeats_and_free(struct dist_hbeats *);
+int is_connection_local(SBUF2 *sb);
 
 #endif

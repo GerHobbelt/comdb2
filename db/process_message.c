@@ -251,7 +251,6 @@ static const char *HELP_SCHEMA[] = {
     "count <table>                  - count the records in the given table",
     "stat csc2vers <table>          - get current schema version for table",
     "stat dumpcsc2 <table> #        - dump version # of schema for given table",
-    "dumprecord <table> <rrn/genid> - dump record by rrn/genid",
     "dmpcts                         - show table constraints",
     "dumptags                       - list known tags",
     "screportfreq                   - set progress report frequency in seconds",
@@ -420,7 +419,6 @@ int process_sync_command(struct dbenv *dbenv, char *line, int lline, int st)
             logmsg(LOGMSG_USER, "got rep_always_wait\n");
             dbenv->rep_always_wait = 1;
         }
-
         else if (tokcmp(tok, ltok, "none") == 0) {
             dbenv->rep_sync = REP_SYNC_NONE;
             dbenv->log_sync = 0;
@@ -2241,24 +2239,6 @@ clipper_usage:
             return -1;
     } else if (tokcmp(tok, ltok, "bdbrem") == 0) {
         backend_cmd(dbenv, line, llinesav, stsav);
-    } else if (tokcmp(tok, ltok, "dumpversp") == 0) {
-        char filename[PATH_MAX];
-        tok = segtok(line, lline, &st, &ltok);
-        if (ltok == 0) {
-            logmsg(LOGMSG_ERROR, "dumpversp requires path\n");
-            return -1;
-        }
-        tokcpy(tok, ltok, filename);
-        dump_user_version_spfile(filename);
-    } else if (tokcmp(tok, ltok, "loadversp") == 0) {
-        char filename[PATH_MAX];
-        tok = segtok(line, lline, &st, &ltok);
-        if (ltok == 0) {
-            logmsg(LOGMSG_ERROR, "dumpversp requires path\n");
-            return -1;
-        }
-        tokcpy(tok, ltok, filename);
-        read_user_version_spfile(filename);
     } else if (tokcmp(tok, ltok, "electtime") == 0) {
         int num;
 
@@ -2288,21 +2268,14 @@ clipper_usage:
         } else
             load_cache(tok);
     } else if (tokcmp(tok, ltok, "dump_cache") == 0) {
-        char filename[PATH_MAX];
         if (thedb->bdb_env == NULL)
             return -1;
         tok = segtok(line, lline, &st, &ltok);
         if (ltok == 0) {
             dump_cache_default();
-        } else if (ltok >= PATH_MAX) {
-            logmsg(LOGMSG_ERROR,"file name too long. Max: %d\n",
-                    PATH_MAX - 1);
-            return -1;
         } else {
-            tokcpy(tok, ltok, filename);
-            tok = segtok(line, lline, &st, &ltok);
             int max_pages = (ltok != 0) ? toknum(tok, ltok) : 0;
-            dump_cache(filename, max_pages);
+            dump_cache(max_pages);
         }
     } else if (tokcmp(tok, ltok, "flush") == 0) {
         if (thedb->bdb_env == NULL)
@@ -2632,244 +2605,6 @@ clipper_usage:
     } else if (tokcmp(tok, ltok, "debug") == 0) {
         debug_trap(line + st, lline - st);
     }
-
-    // TODO(NC): deprecate?
-    /*
-       access set password <user>  <password>
-       access set read     <table> <user>
-       access set write    <table> <user>
-       access set authentication
-
-       access delete read  <table> <user>
-       access delete write <table> <user>
-
-       access get read     <table> <user>
-       access get write    <table> <user>
-       access get authentication
-     */
-    else if (tokcmp(tok, ltok, "access") == 0) {
-        char table[MAXTABLELEN];
-        char user[17];
-        char password[17];
-        int rc;
-        int bdberr;
-
-        tok = segtok(line, lline, &st, &ltok);
-
-        if (tokcmp(tok, ltok, "set") == 0) {
-            tok = segtok(line, lline, &st, &ltok);
-
-            if (tokcmp(tok, ltok, "password") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"password too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, password);
-
-                rc = bdb_user_password_set(NULL, user, password);
-                if (!rc) {
-                    logmsg(LOGMSG_USER, "set password for %s\n", user);
-                } else {
-                    logmsg(LOGMSG_ERROR,
-                            "FAILED set password for %s rc=%d\n",
-                            user, rc);
-                }
-            } else if (tokcmp(tok, ltok, "read") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= MAXTABLELEN) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            MAXTABLELEN-1);
-                    return -1;
-                }
-                tokcpy(tok, ltok, table);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                rc = bdb_tbl_access_read_set(dbenv->bdb_env, NULL, table, user,
-                                             &bdberr);
-                if (!rc) {
-                    logmsg(LOGMSG_USER, "set read for %s and table %s\n", user,
-                            table);
-                } else {
-                    logmsg(LOGMSG_ERROR, "FAILED set read for %s rc=%d bdberr=%d\n",
-                            user, rc, bdberr);
-                }
-            } else if (tokcmp(tok, ltok, "write") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= MAXTABLELEN) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            MAXTABLELEN-1);
-                    return -1;
-                }
-                tokcpy(tok, ltok, table);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                rc = bdb_tbl_access_write_set(dbenv->bdb_env, NULL, table, user,
-                                              &bdberr);
-                if (!rc) {
-                    logmsg(LOGMSG_USER, "set write for %s and table %s\n", user,
-                            table);
-                } else {
-                    logmsg(LOGMSG_ERROR, "FAILED set write for %s rc=%d bdberr=%d\n",
-                            user, rc, bdberr);
-                }
-            } else if (tokcmp(tok, ltok, "authentication") == 0) {
-                rc = bdb_authentication_set(dbenv->bdb_env, NULL, 1, &bdberr);
-                if (rc == 0) {
-                    logmsg(LOGMSG_USER, "authentication enabled\n");
-                } else {
-                    logmsg(LOGMSG_ERROR, "FAILED enable authentication rc=%d bdberr=%d\n",
-                            rc, bdberr);
-                }
-            } else if (tokcmp(tok, ltok, "tableXnode") == 0) {
-                logmsg(LOGMSG_ERROR, "tablexnode is deprecated\n");
-            } else {
-                logmsg(LOGMSG_ERROR, "unrecognized \"%.*s\"\n", ltok, tok);
-            }
-        } else if (tokcmp(tok, ltok, "get") == 0) {
-            tok = segtok(line, lline, &st, &ltok);
-
-            if (tokcmp(tok, ltok, "read") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= MAXTABLELEN) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            MAXTABLELEN-1);
-                    return -1;
-                }
-                tokcpy(tok, ltok, table);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                rc = bdb_tbl_access_read_get(dbenv->bdb_env, NULL, table, user,
-                                             &bdberr);
-                logmsg(LOGMSG_ERROR, "rc = %d (\"%s\")\n", rc,
-                        (rc == 0) ? "enabled" : "disabled");
-            } else if (tokcmp(tok, ltok, "write") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= MAXTABLELEN) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            MAXTABLELEN-1);
-                    return -1;
-                }
-                tokcpy(tok, ltok, table);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                rc = bdb_tbl_access_write_get(dbenv->bdb_env, NULL, table, user,
-                                              &bdberr);
-                logmsg(LOGMSG_ERROR, "rc = %d (\"%s\")\n", rc,
-                        (rc == 0) ? "enabled" : "disabled");
-
-            } else if (tokcmp(tok, ltok, "authentication") == 0) {
-                rc = bdb_authentication_get(dbenv->bdb_env, NULL, &bdberr);
-                logmsg(LOGMSG_ERROR, "rc = %d (\"%s\")\n", rc,
-                        (rc == 0) ? "enabled" : "disabled");
-            } else if (tokcmp(tok, ltok, "tableXnode") == 0) {
-                logmsg(LOGMSG_ERROR, "Tablexnode is deprecated\n");
-            } else {
-                logmsg(LOGMSG_ERROR, "unrecognized \"%.*s\"\n", ltok, tok);
-            }
-        } else if (tokcmp(tok, ltok, "del") == 0) {
-
-            tok = segtok(line, lline, &st, &ltok);
-
-            if (tokcmp(tok, ltok, "read") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= MAXTABLELEN) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            MAXTABLELEN-1);
-                    return -1;
-                }
-                tokcpy(tok, ltok, table);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                rc = bdb_tbl_access_read_delete(dbenv->bdb_env, NULL, table,
-                                                user, &bdberr);
-                if (rc == 0) {
-                    logmsg(LOGMSG_ERROR, "deleted read for %s and table %s\n", user,
-                            table);
-                } else {
-                    logmsg(LOGMSG_ERROR,
-                            "FAILED delete read for %s rc=%d bdberr=%d\n", user,
-                            rc, bdberr);
-                }
-            } else if (tokcmp(tok, ltok, "write") == 0) {
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= MAXTABLELEN) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            MAXTABLELEN-1);
-                    return -1;
-                }
-                tokcpy(tok, ltok, table);
-
-                tok = segtok(line, lline, &st, &ltok);
-                if (ltok >= 17) {
-                    logmsg(LOGMSG_ERROR,"user name too long. Max: %d\n",
-                            16);
-                    return -1;
-                }
-                tokcpy(tok, ltok, user);
-
-                rc = bdb_tbl_access_write_delete(dbenv->bdb_env, NULL, table,
-                                                 user, &bdberr);
-                if (rc == 0) {
-                    logmsg(LOGMSG_ERROR, "deleted write for %s and table %s\n", user,
-                            table);
-                } else {
-                    logmsg(LOGMSG_ERROR,
-                            "FAILED delete write for %s rc=%d bdberr=%d\n",
-                            user, rc, bdberr);
-                }
-            } else {
-                logmsg(LOGMSG_ERROR, "unknown option \"%.*s\"\n", ltok, tok);
-            }
-        } else {
-            logmsg(LOGMSG_ERROR, "unknown option \"%.*s\"\n", ltok, tok);
-        }
-    }
-
     else if (tokcmp(tok, ltok, "llmeta") == 0) {
         int rc;
         int bdberr;
@@ -3259,39 +2994,6 @@ clipper_usage:
             logmsg(LOGMSG_ERROR, "echo failed\n");
         }
 
-    } else if (tokcmp(tok, ltok, "dumprecord") == 0) {
-        struct dbtable *db;
-        int rrn;
-        unsigned long long genid;
-        char *tbl;
-        char *snum;
-
-        tok = segtok(line, lline, &st, &ltok);
-        if (ltok == 0) {
-            logmsg(LOGMSG_ERROR, "Expected table name.\n");
-            return -1;
-        }
-        tbl = tokdup(tok, ltok);
-        db = get_dbtable_by_name(tbl);
-        if (db == NULL) {
-            logmsg(LOGMSG_ERROR, "Unknown table %s\n", tbl);
-            free(tbl);
-            return -1;
-        }
-        free(tbl);
-
-        tok = segtok(line, lline, &st, &ltok);
-        if (ltok == 0) {
-            logmsg(LOGMSG_ERROR, "Expected genid\n");
-            return -1;
-        }
-        snum = tokdup(tok, ltok);
-        if (!snum)
-            return -1;
-        genid = strtoull(snum, NULL, 0);
-        free(snum);
-        rrn = 2;
-        dump_record_by_rrn_genid(db, rrn, genid);
     } else if (tokcmp(tok, ltok, "upgraderecord") == 0) {
         unsigned long long genid;
         char *tbl;
@@ -3523,45 +3225,9 @@ clipper_usage:
         if (ltok == 0) {
             print_help_page(HELP_MEMDEBUG);
         } else if (tokcmp(tok, ltok, "callers") == 0) {
-            tok = segtok(line, lline, &st, &ltok);
-            if (ltok == 0)
-                memdebug_dump_callers(stderr, 1);
-            else {
-                char *fname;
-                FILE *f;
-                fname = tokdup(tok, ltok);
-                f = fopen(fname, "w");
-                if (f == NULL) {
-                    logmsg(LOGMSG_ERROR, "Can't open %s: %s\n", fname,
-                            strerror(errno));
-                    free(fname);
-                    return 0;
-                }
-                memdebug_dump_callers(f, 1);
-                fclose(f);
-                logmsg(LOGMSG_ERROR, "Dumped callers to %s\n", fname);
-                free(fname);
-            }
+            memdebug_dump_callers(stderr, 1);
         } else if (tokcmp(tok, ltok, "blocks") == 0) {
-            tok = segtok(line, lline, &st, &ltok);
-            if (ltok == 0)
-                memdebug_dump_blocks(stderr);
-            else {
-                char *fname;
-                FILE *f;
-                fname = tokdup(tok, ltok);
-                f = fopen(fname, "w");
-                if (f == NULL) {
-                    logmsg(LOGMSG_ERROR, "Can't open %s: %s\n", fname,
-                            strerror(errno));
-                    free(fname);
-                    return 0;
-                }
-                memdebug_dump_blocks(f);
-                fclose(f);
-                logmsg(LOGMSG_USER, "Dumped allocated blocks to %s\n", fname);
-                free(fname);
-            }
+            memdebug_dump_blocks(stderr);
         } else
             print_help_page(HELP_MEMDEBUG);
         return 0;
@@ -3712,35 +3378,7 @@ clipper_usage:
         process_forbid_coordinator(&line[st], lline - st);
     } else if (tokcmp(tok, ltok, "show-allowed-coordinators") == 0) {
         show_allowed_coordinators();
-    } else if (tokcmp(tok, ltok, "oldestgenids") == 0) {
-        int i, stripe;
-        void *buf = malloc(64 * 1024);
-        int rc;
-        struct ireq iq;
-        int reclen;
-        unsigned long long genid;
-        int bdberr;
-        init_fake_ireq(thedb, &iq);
-        for (i = 0; i < thedb->num_dbs; i++) {
-            iq.usedb = thedb->dbs[i];
-            for (stripe = 0; stripe < gbl_dtastripe; stripe++) {
-                uint8_t ver;
-                rc = bdb_find_oldest_genid(iq.usedb->handle, NULL, stripe, buf,
-                                           &reclen, 64 * 1024, &genid, &ver,
-                                           &bdberr);
-                logmsg(LOGMSG_USER, "%s stripe %d ", iq.usedb->tablename,
-                       stripe);
-                if (rc == 0)
-                   logmsg(LOGMSG_USER, "%016llx %d", genid, bdb_genid_timestamp(genid));
-                else if (rc == 1)
-                    logmsg(LOGMSG_USER, "no records");
-                else
-                    logmsg(LOGMSG_ERROR, "error rc %d bdberr %d", rc, bdberr);
-                logmsg(LOGMSG_USER, "\n");
-            }
-        }
-    }
-
+    } 
     else if (tokcmp(tok, ltok, "exclusive_blockop_qconsume") == 0) {
         tok = segtok(line, lline, &st, &ltok);
         if (ltok == 0) {
@@ -5446,6 +5084,8 @@ clipper_usage:
         }
     } else if (tokcmp(tok, ltok, "do_not_use_modsnap_for_snapshot") == 0) {
         gbl_use_modsnap_for_snapshot = 0;
+    } else if (tokcmp(tok, ltok, "del_llmeta_comdb2_seqno") == 0) {
+        bdb_del_seqno(NULL);
     } else {
         // see if any plugins know how to handle this
         struct message_handler *h;

@@ -212,9 +212,7 @@ int osql_send_recordgenid(osql_target_t *target, unsigned long long rqid,
  * Update stats
  *
  */
-int osql_send_updstat(osql_target_t *target, unsigned long long rqid,
-                      uuid_t uuid, unsigned long long seq, char *pData,
-                      int nData, int nStat, int type);
+int osql_send_updstat(osqlstate_t *);
 
 /**
  * Sends the result of block processor transaction commit
@@ -456,5 +454,10 @@ uint8_t *osqlcomm_scl_put(struct sc_list *scl,
  *
  */
 int osql_finalize_scs(struct ireq *iq, tran_type *trans);
+
+/**
+ * Return non-zero if host is known to osqlnet, 0 if not
+ */
+int osqlcomm_host_known(const char *tohost);
 
 #endif

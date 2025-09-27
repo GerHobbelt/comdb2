@@ -1032,7 +1032,7 @@ static int _shard_connect(struct sqlclntstate *clnt, dohsql_connector_t *conn,
     conn->clnt->origin = clnt->origin;
     conn->clnt->current_user = clnt->current_user;
     conn->clnt->sql = strdup(sql);
-    conn->clnt->authdata = get_authdata(clnt);
+    conn->clnt->authdata = clnt->authdata = get_authdata(clnt);
     conn->clnt->argv0 = clnt->argv0;
     memcpy(conn->clnt->tzname, clnt->tzname, sizeof(clnt->tzname));
     make_dohsql_plugin(conn->clnt);
@@ -1892,6 +1892,10 @@ int dohsql_error(struct sqlclntstate *clnt, const char **errstr)
     if (clnt && clnt->conns && clnt->conns->child_err) {
         child_clnt = clnt->conns->conns[clnt->conns->child_err].clnt;
         *errstr = child_clnt->saved_errstr;
+        if (child_clnt->saved_rc == SQLITE_INTERNAL) {
+            logmsg(LOGMSG_ERROR, "%s child %d error %d\n",
+                    __func__, clnt->conns->child_err, child_clnt->saved_rc);
+        }
         return child_clnt->saved_rc;
     }
 

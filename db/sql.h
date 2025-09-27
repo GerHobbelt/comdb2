@@ -215,6 +215,7 @@ typedef struct osqlstate {
 
     /* set to 1 if we have already called osql_sock_start in socksql mode */
     unsigned sock_started : 1;
+    unsigned has_updstat : 1;
 } osqlstate_t;
 
 enum ctrl_sqleng {
@@ -1464,8 +1465,7 @@ uint16_t stmt_num_tbls(sqlite3_stmt *);
 int newsql_dump_query_plan(struct sqlclntstate *clnt, sqlite3 *hndl);
 void init_cursor(BtCursor *, Vdbe *, Btree *);
 void run_stmt_setup(struct sqlclntstate *, sqlite3_stmt *);
-int sql_index_name_trans(char *namebuf, int len, struct schema *schema,
-                         struct dbtable *db, int ixnum, void *trans);
+void sql_index_name_trans(char *namebuf, int len, struct schema *, struct dbtable *, int ixnum, void *trans);
 
 int get_prepared_stmt(struct sqlthdstate *, struct sqlclntstate *, struct sql_state *, struct errstat *, int);
 int get_prepared_stmt_no_lock(struct sqlthdstate *, struct sqlclntstate *, struct sql_state *, struct errstat *, int);

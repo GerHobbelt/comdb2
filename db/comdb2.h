@@ -2569,7 +2569,7 @@ int get_csc2_fname(const struct dbtable *db, const char *dir, char *fname,
 int get_generic_csc2_fname(const struct dbtable *db, char *fname, size_t fname_len);
 
 void flush_db(void);
-void dump_cache(const char *file, int max_pages);
+void dump_cache(int max_pages);
 void load_cache(const char *file);
 void load_cache_default(void);
 void dump_cache_default(void);
@@ -2984,7 +2984,7 @@ long long get_unique_longlong(struct dbenv *env);
 void block_new_requests(struct dbenv *dbenv);
 void allow_new_requests(struct dbenv *dbenv);
 
-int get_next_seqno(void *tran, long long *seqno);
+int get_next_seqno(void *tran, void *sc_tran, long long *seqno);
 int add_oplog_entry(struct ireq *iq, void *trans, int type, void *logrec,
                     int logsz);
 int local_replicant_write_clear(struct ireq *in_iq, void *in_trans,

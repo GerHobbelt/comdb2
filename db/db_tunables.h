@@ -38,11 +38,6 @@ REGISTER_TUNABLE("allow_lua_print", "Enable to allow stored "
 REGISTER_TUNABLE("allow_anon_id_for_spmux",
                  "Allow anonymous identities over connections routed from the secure pmux port", TUNABLE_INTEGER,
                  &gbl_allow_anon_id_for_spmux, 0, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("allow_lua_dynamic_libs",
-                 "Enable to allow use of dynamic "
-                 "libraries (Default: off)",
-                 TUNABLE_BOOLEAN, &gbl_allow_lua_dynamic_libs, READONLY | NOARG,
-                 NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("allow_pragma",
                  "Enable to allow use of the PRAGMA command (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_allow_pragma,
@@ -80,6 +75,10 @@ REGISTER_TUNABLE("archive_on_init",
                  "Archive files with database extensions in the database directory "
                  "at the time of init. (Default: ON)",
                  TUNABLE_BOOLEAN, &gbl_archive_on_init, READONLY, NULL,
+                 NULL, NULL, NULL);
+REGISTER_TUNABLE("create_default_consumer_atomically",
+                 "Create default consumers atomically (default on)",
+                 TUNABLE_BOOLEAN, &gbl_create_default_consumer_atomically, 1, NULL,
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("badwrite_intvl", NULL, TUNABLE_INTEGER,
                  &gbl_test_badwrite_intvl, READONLY, NULL, NULL, NULL, NULL);
@@ -171,6 +170,11 @@ REGISTER_TUNABLE(
 REGISTER_TUNABLE("deadlock_policy_override", NULL, TUNABLE_INTEGER,
                  &gbl_deadlock_policy_override, READONLY, NULL, NULL,
                  deadlock_policy_override_update, NULL);
+REGISTER_TUNABLE(
+    "driver_ulimit",
+    "Memory limit for comdb2 driver to set (a value of 0 indicates that the comdb2 "
+    "process was not started by comdb2 driver.",
+    TUNABLE_INT64, &gbl_driver_ulimit, READONLY, NULL, NULL, NULL, NULL);
 /*
 REGISTER_TUNABLE("decimal_rounding", NULL, TUNABLE_INTEGER,
                  &gbl_decimal_rounding, READONLY, NULL, NULL, NULL, NULL);
@@ -275,6 +279,8 @@ REGISTER_TUNABLE("flush_on_prepare", "Flush master log on prepare. (Default: on)
                  &gbl_flush_on_prepare, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("flush_replicant_on_prepare", "Flush replicant log on prepare. (Default: on)", TUNABLE_BOOLEAN,
                  &gbl_flush_replicant_on_prepare, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("slow_rep_log_get_loop", "Add latency to the master's log-get loop for testing.  (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_slow_rep_log_get_loop, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("wait_for_prepare_seqnum", "Wait-for-seqnum for prepare records. (Default: on)", TUNABLE_BOOLEAN,
                  &gbl_wait_for_prepare_seqnum, 0, NULL, NULL, NULL, NULL);
 
@@ -297,6 +303,9 @@ REGISTER_TUNABLE("debug_exit_coordinator_after_commit", "Coordinator exits after
                  NULL);
 REGISTER_TUNABLE("debug_sleep_coordinator_before_commit", "Coordinator sleeps before committing.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_debug_sleep_coordinator_before_commit, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL,
+                 NULL);
+REGISTER_TUNABLE("debug_sleep_during_bulk_import", "Sleep during bulk import (default: off)",
+                 TUNABLE_BOOLEAN, &gbl_debug_sleep_during_bulk_import, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL,
                  NULL);
 REGISTER_TUNABLE("debug_coordinator_dispatch_failure", "Fake failed dispatch in coordinator.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_debug_coordinator_dispatch_failure, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL,
@@ -488,6 +497,11 @@ REGISTER_TUNABLE("enable_snapshot_isolation",
                  "Enable to allow SNAPSHOT level transactions to run against "
                  "the database. (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_snapisol, READONLY, NULL, NULL, NULL,
+                 NULL);
+REGISTER_TUNABLE("enable_serial_isolation",
+                 "Enable to allow SERIALIZABLE level transactions to run against "
+                 "the database. (Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_serializable, READONLY, NULL, NULL, NULL,
                  NULL);
 REGISTER_TUNABLE("set_snapshot_impl",
                  "Changes the default snapshot implementation "
@@ -724,10 +738,6 @@ REGISTER_TUNABLE("mask_internal_tunables",
                  "When enabled, comdb2_tunables system table would not list "
                  "INTERNAL tunables (Default: on)", TUNABLE_BOOLEAN,
                  &gbl_mask_internal_tunables, NOARG, NULL, NULL, NULL, NULL);
-
-REGISTER_TUNABLE("allow_readonly_runtime_mod",
-                 "When enabled, allow modification of READONLY tunables at runtime.  (Default: off)", TUNABLE_BOOLEAN,
-                 &gbl_allow_readonly_runtime_mod, NOARG | INTERNAL, NULL, NULL, NULL, NULL);
 
 /*
   Note: master_retry_poll_ms' value < 0 was previously ignored without
@@ -1099,12 +1109,12 @@ REGISTER_TUNABLE("slowfget", NULL, TUNABLE_INTEGER, &__slow_memp_fget_ns,
 REGISTER_TUNABLE("slowread", NULL, TUNABLE_INTEGER, &__slow_read_ns, READONLY,
                  NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("slow_rep_process_txn_freq", NULL, TUNABLE_INTEGER,
-                 &gbl_slow_rep_process_txn_freq, READONLY, NULL, NULL, NULL,
+                 &gbl_slow_rep_process_txn_freq, 0, NULL, NULL, NULL,
                  NULL);
 REGISTER_TUNABLE("slow_rep_process_txn_maxms", NULL, TUNABLE_INTEGER,
-                 &gbl_slow_rep_process_txn_maxms, READONLY, NULL, NULL, NULL,
+                 &gbl_slow_rep_process_txn_maxms, 0, NULL, NULL, NULL,
                  NULL);
-REGISTER_TUNABLE("slow_rep_process_txn_minms", NULL, TUNABLE_INTEGER, &gbl_slow_rep_process_txn_minms, READONLY, NULL,
+REGISTER_TUNABLE("slow_rep_process_txn_minms", NULL, TUNABLE_INTEGER, &gbl_slow_rep_process_txn_minms, 0, NULL,
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("slowwrite", NULL, TUNABLE_INTEGER, &__slow_write_ns, READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sort_nulls_with_header",
@@ -1165,14 +1175,16 @@ REGISTER_TUNABLE("temptable_limit",
                  "create. (Default: 8192)",
                  TUNABLE_INTEGER, &gbl_temptable_pool_capacity, READONLY, NULL,
                  NULL, NULL, NULL);
+REGISTER_TUNABLE("test_tunable_nozero", NULL, TUNABLE_INTEGER, &gbl_test_tunable_nozero,
+                 NOZERO, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("test_tunable_int_limit", NULL, TUNABLE_INTEGER, &gbl_test_tunable_int_limit,
-                 0 , NULL, NULL, NULL, NULL);
+                 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("test_tunable_int_signed_limit", NULL, TUNABLE_INTEGER, &gbl_test_tunable_int_signed_limit,
                  SIGNED, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("test_tunable_int64_limit", NULL, TUNABLE_INTEGER, &gbl_test_tunable_int64_limit,
-                 INT64, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("test_tunable_int64_signed_limit", NULL, TUNABLE_INTEGER, &gbl_test_tunable_int64_signed_limit,
-                 INT64 | SIGNED, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("test_tunable_int64_limit", NULL, TUNABLE_INT64, &gbl_test_tunable_int64_limit,
+                 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("test_tunable_int64_signed_limit", NULL, TUNABLE_INT64, &gbl_test_tunable_int64_signed_limit,
+                 SIGNED, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("test_blob_race", NULL, TUNABLE_INTEGER, &gbl_test_blob_race,
                  READONLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("test_scindex_deadlock",
@@ -1921,6 +1933,11 @@ REGISTER_TUNABLE("logdelete_lock_trace",
                  "(Default: off)",
                  TUNABLE_BOOLEAN, &gbl_logdelete_lock_trace, EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
 
+REGISTER_TUNABLE("fail_to_create_default_cons",
+                 "Fail in the middle of creating a default consumer to test that it happens atomically.  "
+                 "(Default: off)",
+                 TUNABLE_BOOLEAN, &gbl_fail_to_create_default_cons,
+                 INTERNAL, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("flush_log_at_checkpoint",
                  "Replicants flush the log at checkpoint records.  "
                  "(Default: on)",
@@ -1994,12 +2011,6 @@ REGISTER_TUNABLE(
     "Number of iterations of PBKDF2 algorithm for password hashing.",
     TUNABLE_INTEGER, &gbl_pbkdf2_iterations, NOZERO | SIGNED, NULL, NULL,
     pbkdf2_iterations_update, NULL);
-
-REGISTER_TUNABLE("kafka_topic", NULL, TUNABLE_STRING, &gbl_kafka_topic,
-                 READONLY | READEARLY, NULL, NULL, NULL, NULL);
-
-REGISTER_TUNABLE("kafka_brokers", NULL, TUNABLE_STRING, &gbl_kafka_brokers,
-                 READONLY | READEARLY, NULL, NULL, NULL, NULL);
 
 REGISTER_TUNABLE("machine_class",
                  "override for the machine class from this db perspective.",
@@ -2246,12 +2257,6 @@ REGISTER_TUNABLE("client_abort_on_slow",
                  "Enable watchdog to abort if a \"slow\" client is detected."
                  "  (Default: off)", TUNABLE_BOOLEAN, &gbl_client_abort_on_slow,
                  EXPERIMENTAL | INTERNAL, NULL, NULL, NULL, NULL);
-
-REGISTER_TUNABLE("test_log_file",
-                 "Dedicated log file for use by the test suite only.  "
-                 "(Default: off)", TUNABLE_STRING, &gbl_test_log_file,
-                 EXPERIMENTAL | INTERNAL | READEARLY, NULL, NULL,
-                 test_log_file_update, NULL);
 
 REGISTER_TUNABLE(
     "max_password_cache_size",
@@ -2523,9 +2528,11 @@ REGISTER_TUNABLE("genshard_verbose",
                  TUNABLE_BOOLEAN, &gbl_gen_shard_verbose, 0, NULL, NULL, NULL,
                  NULL);
 REGISTER_TUNABLE("legacy_verbose", "Log all legacy (opcode+old sql) requests (default: off)", TUNABLE_BOOLEAN, &gbl_legacy_requests_verbose, 0, NULL, NULL, NULL, NULL);
-
 REGISTER_TUNABLE("iam_dbname",
                  "override dbname for IAM",
                  TUNABLE_STRING, &gbl_iam_dbname, READEARLY | READONLY, NULL,
                  NULL, NULL, NULL);
+REGISTER_TUNABLE("inproc_conn_ttl", "Close in-process cached connections after this many seconds of inactivity (Default: 10s)",
+                 TUNABLE_INTEGER, &gbl_inproc_conn_ttl, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("comdb2_oplog_preserve_seqno", "Preserve max value of the seqno in llmeta", TUNABLE_BOOLEAN, &gbl_comdb2_oplog_preserve_seqno, INTERNAL, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

@@ -47,6 +47,7 @@
 
 #define COMDB2_NOT_AUTHORIZED_ERRMSG "comdb2: not authorized"
 
+int str_is_alphanumeric(const char * const name, const char * const exceptions);
 int  readIntFromToken(Token* t, int *rst);
 int  comdb2SqlSchemaChange(OpFunc *);
 int  comdb2SqlSchemaChange_tran(OpFunc *arg);
@@ -160,6 +161,7 @@ int comdb2TokenToStr(Token *nm, char *buf, size_t len);
 int comdb2IsPrepareOnly(Parse* pParse);
 int comdb2AuthenticateUserOp(Parse* pParse);
 
-void create_default_consumer_sp(Parse *, char *);
+void create_default_consumer_sp_atomic(Parse *p, char *spname, const char * tablename_for_q, const char * newcsc2_for_q, int seq_for_q, char dest_for_q[64]);
+void create_default_consumer_sp(Parse *p, char *spname);
 
 #endif // COMDB2BUILD_H

@@ -4299,7 +4299,7 @@ int fdb_trans_commit(sqlclntstate *clnt, enum trans_clntcomm sideeffects)
     fdb_tran_t *tran, *tmp;
     fdb_msg_t *msg;
     int rc = 0;
-
+    uuidstr_t tus;
     if (!dtran)
         return 0;
 
@@ -4367,7 +4367,7 @@ int fdb_trans_commit(sqlclntstate *clnt, enum trans_clntcomm sideeffects)
             }
         }
         if (gbl_fdb_track)
-            logmsg(LOGMSG_USER, "%s Send Commit tid=%llx db=\"%s\" rc=%d\n", __func__, *(unsigned long long *)tran->tid,
+            logmsg(LOGMSG_USER, "%s Send Commit tid=%s db=\"%s\" rc=%d\n", __func__, comdb2uuidstr((unsigned char *)tran->tid, tus),
                    tran->fdb->dbname, rc);
     }
 
@@ -6262,6 +6262,12 @@ static fdb_push_connector_t *fdb_push_connector_create(const char *dbname,
         return NULL;
 
     int rc = fdb_get_remote_version(fdb->dbname, tblname, fdb->class, local, &remote_version, &err);
+
+    if (sqlite3UnlockTable(dbname, tblname)) {
+        logmsg(LOGMSG_ERROR, "%s:%d Failed to unlock table %s on db %s\n!!",
+                                __func__, __LINE__, tblname, dbname); 
+    }
+
     switch (rc) {
         case FDB_NOERR:
             logmsg(LOGMSG_ERROR, "Table %s already exists, ver %llu\n", tblname, remote_version);

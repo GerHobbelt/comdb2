@@ -1095,6 +1095,11 @@ int osql_save_updrec(struct BtCursor *pCur, struct sql_thread *thd, char *pData,
     return 0;
 }
 
+void osql_save_updstat(osqlstate_t *osql)
+{
+    osql->has_updstat = 1;
+}
+
 int osql_save_insrec(struct BtCursor *pCur, struct sql_thread *thd, char *pData,
                      int nData, int flags)
 {
@@ -1578,6 +1583,9 @@ int osql_shadtbl_process(struct sqlclntstate *clnt, int *nops, int *bdberr,
         if (rc)
             return -1;
     }
+    if (osql->has_updstat) {
+        osql_send_updstat(osql);
+    }
 
     return rc;
 }
@@ -1793,7 +1801,7 @@ static int process_local_shadtbl_updcols(struct sqlclntstate *clnt,
 
     cksz = (cdata[0] + 1) * sizeof(int);
     if (ldata != cksz) {
-        logmsg(LOGMSG_USER, 
+        logmsg(LOGMSG_ERROR, 
                 "%s: mismatched size for updcol object: got %d should be %d!\n",
                 __func__, ldata, cksz);
         return SQLITE_INTERNAL;
@@ -1860,17 +1868,20 @@ static int process_local_shadtbl_qblob(struct sqlclntstate *clnt,
         tmptblkey = bdb_temp_table_key(tbl->blb_cur);
         idx = i;
         if (rc == IX_EMPTY || rc == IX_NOTFND ||
-            (key.seq != tmptblkey->seq || key.id != tmptblkey->id)) {
+            (tmptblkey && (key.seq != tmptblkey->seq || key.id != tmptblkey->id))) {
             /* null blob */
             data = NULL;
             ldata = -1;
         } else if (rc == IX_FND) {
-            tmptblkey = bdb_temp_table_key(tbl->blb_cur);
+            assert(tmptblkey);
             if (tmptblkey->odh)
                 idx |= OSQL_BLOB_ODH_BIT;
             data = bdb_temp_table_data(tbl->blb_cur);
             ldata = bdb_temp_table_datasize(tbl->blb_cur);
         } else {
+            logmsg(LOGMSG_ERROR, 
+                    "%s: error finding blob %d!\n",
+                    __func__, rc);
             return SQLITE_INTERNAL;
         }
 
@@ -1925,7 +1936,7 @@ static int process_local_shadtbl_index(struct sqlclntstate *clnt,
         rc = bdb_temp_table_find_exact(tbl->env->bdb_env, tmp_cur, &key,
                                        sizeof(key), bdberr);
         if (rc != IX_FND) {
-            logmsg(LOGMSG_ERROR, "%s: error missing index record!\n", __func__);
+            logmsg(LOGMSG_ERROR, "%s: error missing index record rc %d!\n", __func__, rc);
             return SQLITE_INTERNAL;
         }
 
@@ -1993,9 +2004,9 @@ static int process_local_shadtbl_add(struct sqlclntstate *clnt, shad_tbl_t *tbl,
                                   get_rec_flags(clnt, tbl, key, 1));
 
             if (rc) {
-                logmsg(LOGMSG_USER,
-                       "%s: error writting record to master in offload mode!\n",
-                       __func__);
+                logmsg(LOGMSG_ERROR,
+                       "%s: error writting insrec to master in offload mode rc %d!\n",
+                       __func__, rc);
                 return SQLITE_INTERNAL;
             }
         }
@@ -2029,9 +2040,9 @@ static int process_local_shadtbl_add(struct sqlclntstate *clnt, shad_tbl_t *tbl,
                                   get_rec_flags(clnt, tbl, key, 1));
 
             if (rc) {
-                logmsg(LOGMSG_USER,
-                       "%s: error writting record to master in offload mode!\n",
-                       __func__);
+                logmsg(LOGMSG_ERROR,
+                       "%s: error writting reorder insrec to master in offload mode rc %d!\n",
+                       __func__, rc);
                 return SQLITE_INTERNAL;
             }
         }
@@ -2110,18 +2121,22 @@ static int process_local_shadtbl_upd(struct sqlclntstate *clnt, shad_tbl_t *tbl,
                                   data, ldata, osql_nettype);
 
             if (rc) {
-                rc = SQLITE_INTERNAL;
                 logmsg(LOGMSG_ERROR,
-                       "%s: error writting record to master in offload mode!\n",
-                       __func__);
+                       "%s: error writting updrec to master in offload mode rc %d!\n",
+                       __func__, rc);
+                rc = SQLITE_INTERNAL;
                 break;
             }
         }
 
         int *updCols = NULL;
         rc = process_local_shadtbl_updcols(clnt, tbl, &updCols, bdberr, seq);
-        if (rc)
+        if (rc) {
+                logmsg(LOGMSG_ERROR,
+                       "%s: error processing updcols rc %d!\n",
+                       __func__, rc);
             return SQLITE_INTERNAL;
+        }
 
         /* indexes to delete */
         rc = process_local_shadtbl_index(clnt, tbl, bdberr, genid, 1);
@@ -2151,10 +2166,10 @@ static int process_local_shadtbl_upd(struct sqlclntstate *clnt, shad_tbl_t *tbl,
                                   data, ldata, osql_nettype);
 
             if (rc) {
-                rc = SQLITE_INTERNAL;
                 logmsg(LOGMSG_ERROR,
-                       "%s: error writting record to master in offload mode!\n",
-                       __func__);
+                       "%s: error writting reorder updrec to master in offload mode %d!\n",
+                       __func__, rc);
+                rc = SQLITE_INTERNAL;
                 break;
             }
         }
@@ -2411,6 +2426,7 @@ void osql_shadtbl_close(struct sqlclntstate *clnt)
         /* don't reset timestamp yet */
     }
 
+    osql->has_updstat = 0;
     osql->dirty = 0;
     osql_destroy_verify_temptbl(thedb->bdb_env, clnt);
     osql_destroy_dbq(osql);
@@ -2881,8 +2897,8 @@ static int process_local_shadtbl_recgenids(struct sqlclntstate *clnt,
                                              key.tableversion);
             if (rc) {
                 logmsg(LOGMSG_ERROR, 
-                        "%s:%d: error writting record to master in offload mode!\n",
-                        __func__, __LINE__);
+                        "%s:%d: error writting usedb to master in offload mode rc %d!\n",
+                        __func__, __LINE__, rc);
                 return SQLITE_INTERNAL;
             }
             strncpy0(old_tablename, key.tablename, MAXTABLELEN);
@@ -2897,8 +2913,8 @@ static int process_local_shadtbl_recgenids(struct sqlclntstate *clnt,
                                    key.genid, osql_nettype);
         if (rc) {
             logmsg(LOGMSG_ERROR, 
-                    "%s: error writting record to master in offload mode!\n",
-                    __func__);
+                    "%s: error writting record genid to master in offload mode rc %d!\n",
+                    __func__, rc);
             return SQLITE_INTERNAL;
         }
         osql->replicant_numops++;
@@ -3032,8 +3048,8 @@ static int process_local_shadtbl_sc(struct sqlclntstate *clnt, int *bdberr)
                                     NET_OSQL_SOCK_RPL);
         if (rc) {
             logmsg(LOGMSG_ERROR,
-                   "%s: error writting record to master in offload mode!\n",
-                   __func__);
+                   "%s: error writting sc to master in offload mode rc %d!\n",
+                   __func__, rc);
             return SQLITE_INTERNAL;
         }
         osql->replicant_numops++;
@@ -3143,8 +3159,8 @@ static int process_local_shadtbl_bpfunc(struct sqlclntstate *clnt, int *bdberr)
 
         if (rc) {
             logmsg(LOGMSG_ERROR,
-                   "%s: error writting record to master in offload mode!\n",
-                   __func__);
+                   "%s: error writting bpfunc to master in offload mode rc %d!\n",
+                   __func__, rc);
             return SQLITE_INTERNAL;
         }
         osql->replicant_numops++;

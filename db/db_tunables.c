@@ -41,10 +41,10 @@
 /* Separator for composite tunable components. */
 #define COMPOSITE_TUNABLE_SEP '.'
 
+extern int gbl_debug_sleep_during_bulk_import;
 extern int gbl_waitalive_iterations;
 extern int gbl_allow_anon_id_for_spmux;
 extern int gbl_allow_lua_print;
-extern int gbl_allow_lua_dynamic_libs;
 extern int gbl_allow_pragma;
 extern int gbl_archive_on_init;
 extern int gbl_berkdb_epochms_repts;
@@ -54,10 +54,12 @@ extern int gbl_test_badwrite_intvl;
 extern int gbl_broken_max_rec_sz;
 extern int gbl_broken_num_parser;
 extern int gbl_crc32c;
+extern int gbl_create_default_consumer_atomically;
 extern int gbl_decom;
 extern int gbl_disable_rowlocks;
 extern int gbl_disable_rowlocks_logging;
 extern int gbl_disable_sql_table_replacement;
+extern int gbl_serializable;
 extern int gbl_stack_at_lock_get;
 extern int gbl_stack_at_page_read;
 extern int gbl_stack_at_page_write;
@@ -68,6 +70,7 @@ extern int gbl_disable_skip_rows;
 extern int gbl_enable_berkdb_retry_deadlock_bias;
 extern int gbl_enable_cache_internal_nodes;
 extern int gbl_partial_indexes;
+extern int gbl_fail_to_create_default_cons;
 extern int gbl_force_writesql;
 extern int gbl_logmsg_epochms;
 
@@ -189,6 +192,7 @@ extern int gbl_flush_on_prepare;
 extern int gbl_debug_sleep_before_prepare;
 extern int gbl_wait_for_prepare_seqnum;
 extern int gbl_flush_replicant_on_prepare;
+extern int gbl_slow_rep_log_get_loop;
 extern int gbl_abort_on_unset_ha_flag;
 extern int gbl_abort_on_unfound_txn;
 extern int gbl_abort_on_ufid_mismatch;
@@ -349,8 +353,6 @@ extern char *gbl_crypto;
 extern char *gbl_spfile_name;
 extern char *gbl_user_vers_spfile_name;
 extern char *gbl_timepart_file_name;
-extern char *gbl_test_log_file;
-extern pthread_mutex_t gbl_test_log_file_mtx;
 extern char *gbl_machine_class;
 extern int gbl_ref_sync_pollms;
 extern int gbl_ref_sync_wait_txnlist;
@@ -368,12 +370,11 @@ extern int gbl_permissive_sequence_sc;
 extern int gbl_view_feature;
 extern int gbl_eventlog_fullhintsql;
 
-extern char *gbl_kafka_topic;
-extern char *gbl_kafka_brokers;
 extern int gbl_noleader_retry_duration_ms;
 extern int gbl_noleader_retry_poll_ms;
 
 extern char *gbl_iam_dbname;
+extern int gbl_inproc_conn_ttl;
 
 /* util/ctrace.c */
 extern int nlogs;
@@ -538,7 +539,6 @@ int gbl_page_order_table_scan;
 int gbl_old_column_names = 1;
 int gbl_enable_sq_flattening_optimization = 1;
 int gbl_mask_internal_tunables = 1;
-int gbl_allow_readonly_runtime_mod = 0;
 
 size_t gbl_cached_output_buffer_max_bytes = 8 * 1024 * 1024; /* 8 MiB */
 int gbl_sqlite_sorterpenalty = 5;
@@ -577,14 +577,20 @@ extern int gbl_rep_process_pstack_time;
 extern int gbl_sql_recover_time;
 extern int gbl_legacy_requests_verbose;
 extern int gbl_long_request_ms;
+extern int gbl_comdb2_oplog_preserve_seqno;
 
 extern void set_snapshot_impl(snap_impl_enum impl);
 extern const char *snap_impl_str(snap_impl_enum impl);
 
+int64_t gbl_driver_ulimit = 0;
+
+int gbl_test_tunable_nozero = 1;
 int gbl_test_tunable_int_limit = INT_MAX;
 int gbl_test_tunable_int_signed_limit = INT_MAX;
 int64_t gbl_test_tunable_int64_limit = INT64_MAX;
 int64_t gbl_test_tunable_int64_signed_limit = INT64_MAX;
+
+int parse_int64(const char *value, int64_t *num);
 
 /*
   =========================================================
@@ -1259,18 +1265,6 @@ static int disttxn_allow_coordinator_set(void *context, void *value)
     return 0;
 }
 
-static int test_log_file_update(void *context, void *value)
-{
-    comdb2_tunable *tunable = (comdb2_tunable *)context;
-    char newValue[PATH_MAX];
-    bdb_trans((char *)value, newValue);
-    Pthread_mutex_lock(&gbl_test_log_file_mtx);
-    free(*(char **)tunable->var);
-    *(char **)tunable->var = strdup(newValue);
-    Pthread_mutex_unlock(&gbl_test_log_file_mtx);
-    return 0;
-}
-
 static int file_copier_update(void *context, void *value)
 {
     comdb2_tunable *tunable = (comdb2_tunable *)context;
@@ -1305,6 +1299,22 @@ static void tunable_tolower(char *str)
     while (*tmp) {
         *tmp = tolower(*tmp);
         tmp++;
+    }
+}
+
+int set_driver_ulimit()
+{
+    const char * const ulimit = getenv("COMDB2_DRIVER_ULIMIT");
+    if (ulimit) {
+        const int rc = parse_int64(ulimit, &gbl_driver_ulimit);
+        if (rc) {
+            logmsg(LOGMSG_ERROR, "%s:%d Failed to set driver ulimit to %s\n",
+                __FILE__, __LINE__, ulimit);
+        }
+        return rc;
+    } else {
+        gbl_driver_ulimit = 0;
+        return 0;
     }
 }
 
@@ -1447,6 +1457,7 @@ const char *tunable_type(comdb2_tunable_type type)
 {
     switch (type) {
     case TUNABLE_INTEGER: return "INTEGER";
+    case TUNABLE_INT64: return "INT64";
     case TUNABLE_DOUBLE: return "DOUBLE";
     case TUNABLE_BOOLEAN: return "BOOLEAN";
     case TUNABLE_STRING: return "STRING";
@@ -1479,7 +1490,7 @@ int parse_int64(const char *value, int64_t *num)
 
     errno = 0;
 
-    *num = strtoll(value, &endptr, 10);
+    long long parsed_longlong = strtoll(value, &endptr, 10);
 
     if (errno != 0) {
         logmsg(LOGMSG_DEBUG, "%s: Invalid value '%s'.\n", __func__, value);
@@ -1496,10 +1507,12 @@ int parse_int64(const char *value, int64_t *num)
         return 1;
     }
 
-    if (*num > INT64_MAX || *num < INT64_MIN) {
+    if (parsed_longlong > INT64_MAX || parsed_longlong < INT64_MIN) {
         logmsg(LOGMSG_DEBUG, "%s: Value '%s' not in range\n", __func__, value);
         return 1;
     }
+
+    *num = parsed_longlong;
 
     return 0;
 }
@@ -1627,27 +1640,27 @@ static int parse_bool(const char *value, int *num)
         return TUNABLE_ERR_INTERNAL;                                           \
     }
 
-static int is_unsigned_tunable_int_range_ok(const comdb2_tunable * const t, const int64_t * const num)
+static int is_unsigned_tunable_int_range_ok(const comdb2_tunable * const t, const int64_t num)
 {
     if (num < 0) {
         return 0;
-    } else if ((t->flags & NOZERO) && (*num == 0)) {
+    } else if ((t->flags & NOZERO) && (num == 0)) {
         return 0;
     } else {
         return 1;
     }
 }
 
-static int is_signed_tunable_int_range_ok(const comdb2_tunable * const t, const int64_t * const num)
+static int is_signed_tunable_int_range_ok(const comdb2_tunable * const t, const int64_t num)
 {
-    if ((t->flags & NOZERO) && (*num <= 0)) {
+    if ((t->flags & NOZERO) && (num <= 0)) {
         return 0;
     } else {
         return 1;
     }
 }
 
-static int parse_tunable_integer_value(const comdb2_tunable * const t,
+static int parse_tunable_int64_value(const comdb2_tunable * const t,
     char buf[MAX_TUNABLE_VALUE_SIZE], int64_t * const num)
 {
     if ((!(t->flags & SIGNED)) && (buf[0] == '-')) {
@@ -1655,18 +1668,15 @@ static int parse_tunable_integer_value(const comdb2_tunable * const t,
         return TUNABLE_ERR_INVALID_VALUE;
     }
 
-    const int ret = t->flags & INT64
-        ? parse_int64(buf, num)
-        : parse_int(buf, (int *) num);
-
+    const int ret = parse_int64(buf, num);
     if (ret) {
         logmsg(LOGMSG_ERROR, "Invalid argument for '%s'.\n", t->name);
         return TUNABLE_ERR_INVALID_VALUE;
     }
 
     const int is_tunable_range_ok = (t->flags & SIGNED
-        ? is_signed_tunable_int_range_ok(t, num)
-        : is_unsigned_tunable_int_range_ok(t, num));
+        ? is_signed_tunable_int_range_ok(t, *num)
+        : is_unsigned_tunable_int_range_ok(t, *num));
 
     if (!is_tunable_range_ok) {
         logmsg(LOGMSG_ERROR,
@@ -1678,15 +1688,32 @@ static int parse_tunable_integer_value(const comdb2_tunable * const t,
     return 0;
 }
 
-void set_tunable_integer_value(const comdb2_tunable * const t, const int64_t num)
+static int parse_tunable_int_value(const comdb2_tunable * const t,
+    char buf[MAX_TUNABLE_VALUE_SIZE], int * const num)
 {
-    if (t->flags & INT64) {
-        *(int64_t *)t->var = num;
-    } else {
-        *(int *)t->var = (int) num;
+    if ((!(t->flags & SIGNED)) && (buf[0] == '-')) {
+        logmsg(LOGMSG_ERROR, "Invalid negative value for '%s'.\n", t->name);
+        return TUNABLE_ERR_INVALID_VALUE;
     }
 
-    logmsg(LOGMSG_DEBUG, "Tunable '%s' set to %" PRId64 "\n", t->name, num);
+    const int ret = parse_int(buf, num);
+    if (ret) {
+        logmsg(LOGMSG_ERROR, "Invalid argument for '%s'.\n", t->name);
+        return TUNABLE_ERR_INVALID_VALUE;
+    }
+
+    const int is_tunable_range_ok = (t->flags & SIGNED
+        ? is_signed_tunable_int_range_ok(t, *num)
+        : is_unsigned_tunable_int_range_ok(t, *num));
+
+    if (!is_tunable_range_ok) {
+        logmsg(LOGMSG_ERROR,
+               "Bad range for '%s'.\n",
+               t->name);
+        return TUNABLE_ERR_INVALID_VALUE;
+    }
+
+    return 0;
 }
 
 /*
@@ -1709,11 +1736,11 @@ static comdb2_tunable_err update_tunable(comdb2_tunable *t, const char *value)
 
     switch (t->type) {
     case TUNABLE_INTEGER: {
-        int64_t num;
+        int num;
 
         if ((t->flags & EMPTY) == 0) {
             PARSE_TOKEN;
-            ret = parse_tunable_integer_value(t, buf, &num);
+            ret = parse_tunable_int_value(t, buf, &num);
             if (ret) {
                 logmsg(LOGMSG_ERROR, "%s: Failed to parse tunable\n", __func__);
                 return ret;
@@ -1727,15 +1754,45 @@ static comdb2_tunable_err update_tunable(comdb2_tunable *t, const char *value)
             num = (num != 0) ? 0 : 1;
         }
 
-        /* Perform additional checking if defined. */
         DO_VERIFY(t, &num);
 
         if (t->update) {
             DO_UPDATE(t, &num);
         } else {
-            set_tunable_integer_value(t, num);
+            *(int *)t->var = num;
         }
 
+        logmsg(LOGMSG_DEBUG, "Tunable '%s' set to %d\n", t->name, num);
+        break;
+    }
+    case TUNABLE_INT64: {
+        int64_t num;
+
+        if ((t->flags & EMPTY) == 0) {
+            PARSE_TOKEN;
+            ret = parse_tunable_int64_value(t, buf, &num);
+            if (ret) {
+                logmsg(LOGMSG_ERROR, "%s: Failed to parse tunable\n", __func__);
+                return ret;
+            }
+        } else {
+            num = 1;
+        }
+
+        /* Inverse the value, if needed. */
+        if ((t->flags & INVERSE_VALUE) != 0) {
+            num = (num != 0) ? 0 : 1;
+        }
+
+        DO_VERIFY(t, &num);
+
+        if (t->update) {
+            DO_UPDATE(t, &num);
+        } else {
+            *(int64_t *)t->var = num;
+        }
+
+        logmsg(LOGMSG_DEBUG, "Tunable '%s' set to %" PRId64 "\n", t->name, num);
         break;
     }
     case TUNABLE_DOUBLE: {
@@ -1871,9 +1928,8 @@ comdb2_tunable_err handle_runtime_tunable(const char *name, const char *value)
         return TUNABLE_ERR_INVALID_TUNABLE;
     }
 
-    if ((t->flags & READONLY) != 0 && !gbl_allow_readonly_runtime_mod) {
-        logmsg(LOGMSG_DEBUG, "Attempt to update a READ-ONLY tunable '%s'.\n",
-               name);
+    if (t->flags & READONLY) {
+        logmsg(LOGMSG_DEBUG, "Attempt to update a READ-ONLY tunable '%s'.\n", name);
         return TUNABLE_ERR_READONLY;
     }
 
@@ -1941,9 +1997,11 @@ comdb2_tunable_err handle_lrl_tunable(char *name, int name_len, char *value,
           No argument specified. Check if NOARG flag is
           set for the tunable, in which case its ok.
         */
-        if (((t->flags & NOARG) != 0) &&
-            ((t->type == TUNABLE_INTEGER) || (t->type == TUNABLE_BOOLEAN) ||
-             (t->type == TUNABLE_ENUM))) {
+        if (((t->flags & NOARG) != 0)
+            && ((t->type == TUNABLE_INTEGER)
+             || (t->type == TUNABLE_INT64)
+             || (t->type == TUNABLE_BOOLEAN)
+             || (t->type == TUNABLE_ENUM))) {
             /* Empty the buffer */
             buf[0] = '\0';
             /*

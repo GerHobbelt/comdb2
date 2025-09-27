@@ -1809,6 +1809,7 @@ static int handle_sql_wrongstate(struct sqlthdstate *thd,
     if (srs_tran_destroy(clnt))
         logmsg(LOGMSG_ERROR, "Fail to destroy transaction replay session\n");
 
+    logmsg(LOGMSG_ERROR, "%s: api should have blocked this\n", __func__);
     return SQLITE_INTERNAL;
 }
 
@@ -2923,6 +2924,8 @@ static void update_schema_remotes(struct sqlclntstate *clnt,
     rec->stmt = NULL;
 }
 
+extern int newsql_is_newsql(struct sqlclntstate *clnt);
+
 static void _prepare_error(struct sqlthdstate *thd,
                            struct sqlclntstate *clnt,
                            struct sql_state *rec, int rc,
@@ -2943,8 +2946,13 @@ static void _prepare_error(struct sqlthdstate *thd,
         errstr = (char *)sqlite3_errmsg(thd->sqldb);
         reqlog_logf(thd->logger, REQL_TRACE, "sqlite3_prepare failed %d: %s\n",
                     rc, errstr);
-        /* this is not retriable; api will retry unless ha or only begin was sent */
-        errstat_set_rcstrf(err, ERR_PREPARE, "%s", errstr);
+
+        if (newsql_is_newsql(clnt)) {
+            /* in newsql, this is not retriable; api will retry unless ha or only begin was sent */
+            errstat_set_rcstrf(err, ERR_PREPARE, "%s", errstr);
+        } else {
+            errstat_set_rcstrf(err, ERR_PREPARE_RETRY, "%s", errstr);
+        }
 
         //srs_tran_del_last_query(clnt);
         return;
@@ -4846,7 +4854,7 @@ static int send_heartbeat(struct sqlclntstate *clnt)
         }                                                                      \
     } while (0)
 
-static int enqueue_sql_query(struct sqlclntstate *clnt)
+static int enqueue_sql_query(struct sqlclntstate *clnt, int force_dispatch)
 {
     char msg[1024];
     int rc;
@@ -4910,7 +4918,7 @@ static int enqueue_sql_query(struct sqlclntstate *clnt)
     time_metric_add(thedb->queue_depth, q_depth_tag_and_sql);
 
     assert(clnt->dbtran.pStmt == NULL);
-    uint32_t flags = (clnt->admin ? THDPOOL_FORCE_DISPATCH : 0);
+    uint32_t flags = ((clnt->admin || force_dispatch) ? THDPOOL_FORCE_DISPATCH : 0);
     if (gbl_thdpool_queue_only) {
         flags |= THDPOOL_QUEUE_ONLY;
     }
@@ -5031,11 +5039,11 @@ done:
     return clnt->query_rc;
 }
 
-static int verify_dispatch_sql_query(struct sqlclntstate *clnt)
+static int verify_dispatch_sql_query(struct sqlclntstate *clnt, int force_dispatch)
 {
     memset(clnt->work.zRuleRes, 0, sizeof(clnt->work.zRuleRes));
 
-    if (clnt->admin || !gbl_prioritize_queries || !gbl_ruleset) {
+    if (clnt->admin || force_dispatch || !gbl_prioritize_queries || !gbl_ruleset) {
         return 0;
     }
 
@@ -5066,13 +5074,19 @@ static int verify_dispatch_sql_query(struct sqlclntstate *clnt)
     return rc;
 }
 
+static int is_analyze(char *sql)
+{
+    return strncasecmp("analyze", skipws(sql), 7) == 0;
+}
+
 static int dispatch_sql_query_int(struct sqlclntstate *clnt)
 {
-    int rc = verify_dispatch_sql_query(clnt);
+    int force_dispatch = is_analyze(clnt->sql); // bypass sqlthdpool for analyze requests
+    int rc = verify_dispatch_sql_query(clnt, force_dispatch);
     if (rc != 0) {
         return rc;
     }
-    return enqueue_sql_query(clnt);
+    return enqueue_sql_query(clnt, force_dispatch);
 }
 
 int dispatch_sql_query(struct sqlclntstate *clnt)
@@ -6228,8 +6242,11 @@ int sql_check_errors(struct sqlclntstate *clnt, sqlite3 *sqldb,
     switch (rc) {
     case 0:
         rc = sqlite3_errcode(sqldb);
-        if (rc)
+        if (rc) {
             *errstr = sqlite3_errmsg(sqldb);
+            if (rc == SQLITE_INTERNAL)
+                logmsg(LOGMSG_ERROR, "sqlite3_errcode got rc = %d\n", rc);
+        }
         break;
 
     case SQLITE_DEADLOCK:
@@ -6301,7 +6318,7 @@ int sql_check_errors(struct sqlclntstate *clnt, sqlite3 *sqldb,
         break;
 
     default:
-        logmsg(LOGMSG_DEBUG, "sql_check_errors got rc = %d, "
+        logmsg(LOGMSG_ERROR, "sql_check_errors got rc = %d, "
                              "returning as SQLITE_INTERNAL\n",
                rc);
         rc = SQLITE_INTERNAL;

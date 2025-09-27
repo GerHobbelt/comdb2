@@ -41,6 +41,7 @@ extern int gbl_legacy_schema;
 extern int gbl_permit_small_sequences;
 extern int gbl_lightweight_rename;
 extern int gbl_gen_shard_verbose;
+extern int gbl_sc_protobuf;
 int gbl_view_feature = 1;
 int gbl_disable_sql_table_replacement = 0;
 
@@ -117,12 +118,25 @@ enum table_chk_flags {
     ERROR_IGNORE = 2,
 };
 
+// Checks that a string is alphanumeric. Allowed non-alphanumeric characters can be passed in `exceptions`.
+// Pass emptystring to `exceptions` to pass no exceptions.
+int str_is_alphanumeric(const char * const name, const char * const exceptions)
+{
+    char c;
+    for (int i=0; (c = name[i]), c != '\0'; ++i) {
+        if (!isalnum(c) && !strchr(exceptions, c)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
 static int authenticateSC(const char *table, Parse *pParse);
 /* chkAndCopyTable expects the dst (OUT) buffer to be of MAXTABLELEN size. */
 static inline int chkAndCopyTable(Parse *pParse, char *dst, const char *name,
                                   size_t name_len, enum table_chk_flags error_flag,
                                   int check_shard, int *table_exists,
-                                  char **partition_first_shard)
+                                  char **partition_first_shard, int check_for_illegal_chars)
 {
     int rc = 0;
     char *table_name;
@@ -139,6 +153,11 @@ static inline int chkAndCopyTable(Parse *pParse, char *dst, const char *name,
     /* Check whether table name length is valid. */
     if (strlen(table_name) >= MAXTABLELEN) {
         rc = setError(pParse, SQLITE_MISUSE, "Table name is too long");
+        goto cleanup;
+    }
+
+    if (check_for_illegal_chars && !str_is_alphanumeric(table_name, NON_ALPHANUM_CHARS_ALLOWED_IN_TABLENAME)) {
+        rc = setError(pParse, SQLITE_MISUSE, "table name has illegal characters");
         goto cleanup;
     }
 
@@ -285,7 +304,7 @@ static inline int copyNoSqlToken(
 static inline int chkAndCopyTableTokens(Parse *pParse, char *dst, Token *t1,
                                         Token *t2, enum table_chk_flags error_flag,
                                         int check_shard, int *table_exists,
-                                        char **partition_first_shard)
+                                        char **partition_first_shard, int check_for_illegal_chars)
 {
     int rc;
 
@@ -296,7 +315,7 @@ static inline int chkAndCopyTableTokens(Parse *pParse, char *dst, Token *t1,
         return rc;
 
     if ((rc = chkAndCopyTable(pParse, dst, t1->z, t1->n, error_flag, check_shard,
-                              table_exists, partition_first_shard))) {
+                              table_exists, partition_first_shard, check_for_illegal_chars))) {
         return rc;
     }
 
@@ -795,7 +814,7 @@ void comdb2CreateTableCSC2(
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, pName1, pName2,
                               (noErr) ? ERROR_IGNORE : ERROR_ON_TBL_FOUND, 1,
-                              &table_exists, NULL))
+                              &table_exists, NULL, /* check_for_illegal_chars */ 1))
         goto out;
 
     if (noErr && table_exists) {
@@ -861,7 +880,7 @@ void comdb2AlterTableCSC2(
     }
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, pName1, pName2,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto out;
 
     sc->kind = SC_ALTERTABLE;
@@ -921,7 +940,7 @@ void comdb2DropTable(Parse *pParse, SrcList *pName)
     Token table = {pName->a[0].zName, strlen(pName->a[0].zName)};
     if (chkAndCopyTableTokens(pParse, sc->tablename, &table, 0,
                               ERROR_ON_TBL_NOT_FOUND, 1, 0,
-                              &partition_first_shard))
+                              &partition_first_shard, /* check_for_illegal_chars */ 0))
         goto out;
 
     sc->same_schema = 1;
@@ -996,7 +1015,7 @@ static inline void comdb2Rebuild(Parse *pParse, Token* nm, Token* lnm, int opt)
     }
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, &partition_first_shard))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, &partition_first_shard, /* check_for_illegal_chars */ 0))
         goto out;
 
     fillTableOption(sc, opt);
@@ -1143,7 +1162,7 @@ void comdb2Truncate(Parse* pParse, Token* nm, Token* lnm)
     }
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto out;
 
     sc->kind = SC_TRUNCATETABLE;
@@ -1210,7 +1229,7 @@ void comdb2RebuildIndex(Parse* pParse, Token* nm, Token* lnm, Token* index, int 
     }
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, &partition_first_shard))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, &partition_first_shard, /* check_for_illegal_chars */ 0))
         goto out;
 
     sc->same_schema = 1;
@@ -1314,6 +1333,11 @@ void comdb2CreateProcedure(Parse* pParse, Token* nm, Token* ver, Token* proc)
         char *errMsg = comdb2_asprintf("procedure name must not exceed %d characters", sizeof(spname)-1);
         setError(pParse, SQLITE_MISUSE, errMsg);
         free(errMsg);
+        return;
+    }
+
+    if (!str_is_alphanumeric(spname, NON_ALPHANUM_CHARS_ALLOWED_IN_SPNAME)) {
+        setError(pParse, SQLITE_MISUSE, "procedure name has illegal characters");
         return;
     }
 
@@ -1620,7 +1644,7 @@ void comdb2CreatePartition(Parse* pParse, Token* table,
     memset(tp->tablename, '\0', MAXTABLELEN);
     if (table &&
         chkAndCopyTableTokens(pParse, tp->tablename, table, 0,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 1))
         goto clean_arg;
 
     tp->partition_name = (char*) malloc(MAXTABLELEN);
@@ -1716,7 +1740,7 @@ void comdb2bulkimport(Parse* pParse, Token* nm,Token* lnm, Token* nm2, Token* ln
         return;
 
     setError(pParse, SQLITE_INTERNAL, "Not Implemented");
-    logmsg(LOGMSG_DEBUG, "Bulk import from %.*s to %.*s ", nm->n + lnm->n,
+    logmsg(LOGMSG_ERROR, "%s Bulk import from %.*s to %.*s\n", __func__, nm->n + lnm->n,
            nm->z, nm2->n +lnm2->n, nm2->z);
 }
 
@@ -1729,22 +1753,20 @@ void comdb2Replace(Parse* pParse, Token *nm, Token *nm2, Token *nm3)
         return;
     }
 
+    if (!gbl_sc_protobuf) {
+        setError(pParse, SQLITE_MISUSE,
+            "sc_protobuf lrl option required for sql table replacement");
+        return;
+    }
+
     char * srcdb = NULL;
     char * src_tablename = NULL;
     char * const dst_tablename = (char *)malloc(MAXTABLELEN);
 
     Vdbe *v  = sqlite3GetVdbe(pParse);
 
-    BpfuncArg *arg = (BpfuncArg*) malloc(sizeof(BpfuncArg));
-    if (!arg) goto err;
-    bpfunc_arg__init(arg);
-
-    BpfuncBulkImport *aimport = (BpfuncBulkImport*) malloc(sizeof(BpfuncBulkImport));
-    if (!aimport) goto err;
-    bpfunc_bulk_import__init(aimport);
-
     if (chkAndCopyTableTokens(pParse, dst_tablename, nm, 0,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL)) {
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0)) {
         goto err;
     }
 
@@ -1756,21 +1778,18 @@ void comdb2Replace(Parse* pParse, Token *nm, Token *nm2, Token *nm3)
         goto err;
     }
 
-    aimport->srcdb = srcdb;
-    aimport->src_tablename = src_tablename;
-    aimport->dst_tablename = dst_tablename;
+    struct schema_change_type * const sc = new_schemachange_type();
+    sc->kind = SC_BULK_IMPORT;
+    sc->nothrevent = 1;
+    strncpy(sc->tablename, dst_tablename, sizeof(sc->tablename));
+    strncpy(sc->import_src_tablename, src_tablename, sizeof(sc->import_src_tablename));
+    strncpy(sc->import_src_dbname, srcdb, sizeof(sc->import_src_dbname));
 
-    arg->bimp = aimport;
-    arg->type = BPFUNC_BULK_IMPORT;
-
-    comdb2prepareNoRows(v, pParse, 0, arg, &comdb2SendBpfunc, 
-                        (vdbeFuncArgFree) &free_bpfunc_arg);
+    comdb2PrepareSC(v, pParse, 0, sc, &comdb2SqlSchemaChange_usedb,
+                    (vdbeFuncArgFree)&free_schema_change_type);
 
     return;
 err:
-    if (arg) {
-        free_bpfunc_arg(arg);
-    }
     if (srcdb) {
         free(srcdb);
     }
@@ -1815,6 +1834,8 @@ void comdb2analyze(Parse* pParse, int opt, Token* nm, Token* lnm, int pc, int on
     if (comdb2AuthenticateUserOp(pParse))
         return;
 
+    comdb2WriteTransaction(pParse);
+
     bdb_state_type *bdb_state = thedb->bdb_env;
     if (only_leader && !bdb_amimaster(bdb_state)) {
         setError(pParse, SQLITE_ERROR, "Should only run exclusive_analyze on leader node");
@@ -1839,7 +1860,7 @@ void comdb2analyze(Parse* pParse, int opt, Token* nm, Token* lnm, int pc, int on
             goto err;
 
         if (chkAndCopyTableTokens(pParse, tablename, nm, lnm,
-                                  ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL)) {
+                                  ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0)) {
             free(tablename);
             goto err;
         }
@@ -1851,6 +1872,7 @@ void comdb2analyze(Parse* pParse, int opt, Token* nm, Token* lnm, int pc, int on
     return;
 
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
 }
 
@@ -1895,7 +1917,7 @@ void comdb2analyzeCoverage(Parse* pParse, Token* nm, Token* lnm, int newscale)
     if (!ancov_f->tablename) goto err;
 
     if (chkAndCopyTableTokens(pParse, ancov_f->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto clean_arg;
 
     ancov_f->newvalue = newscale;
@@ -1904,6 +1926,7 @@ void comdb2analyzeCoverage(Parse* pParse, Token* nm, Token* lnm, int newscale)
     return;
 
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
 clean_arg:
     if (arg) free_bpfunc_arg(arg);
@@ -1948,7 +1971,7 @@ void comdb2setSkipscan(Parse* pParse, Token* nm, Token* lnm, int enable)
     if (!ancov_f->tablename) goto err;
 
     if (chkAndCopyTableTokens(pParse, ancov_f->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto clean_arg;
 
     ancov_f->newvalue = enable;
@@ -1957,6 +1980,7 @@ void comdb2setSkipscan(Parse* pParse, Token* nm, Token* lnm, int enable)
     return;
 
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
 clean_arg:
     if (arg) free_bpfunc_arg(arg);
@@ -2003,6 +2027,7 @@ void comdb2enableGenid48(Parse* pParse, int enable)
     return;
 
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
     if (arg)
         free_bpfunc_arg(arg);   
@@ -2048,6 +2073,7 @@ void comdb2enableRowlocks(Parse* pParse, int enable)
     return;
 
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
     if (arg)
         free_bpfunc_arg(arg);   
@@ -2093,7 +2119,7 @@ void comdb2analyzeThreshold(Parse* pParse, Token* nm, Token* lnm, int newthresho
         goto err;
 
     if (chkAndCopyTableTokens(pParse, anthr_f->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         return;
 
     anthr_f->newvalue = newthreshold;
@@ -2102,6 +2128,7 @@ void comdb2analyzeThreshold(Parse* pParse, Token* nm, Token* lnm, int newthresho
 
     return;
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
     if (arg)
         free_bpfunc_arg(arg);
@@ -2117,6 +2144,7 @@ static void deleteAlias(char *alias, Parse *pParse)
     rc = llmeta_rem_tablename_alias(alias, &err);
     
     if (rc) {
+        logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
         setError(pParse, SQLITE_INTERNAL, "Could not delete alias");
     }
 }
@@ -2139,7 +2167,7 @@ void comdb2DeleteAlias(Parse *pParse, Token *name) {
 
     char *alias = (char *)malloc(MAXTABLELEN);
     if (chkAndCopyTableTokens(pParse, alias, name, 0,
-                              ERROR_ON_TBL_FOUND, 1, 0, NULL)) {
+                              ERROR_ON_TBL_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0)) {
         free(alias);
         return;
     }
@@ -2191,7 +2219,7 @@ void comdb2setAlias(Parse* pParse, Token* name, Token* url)
     alias_f->name = (char*) malloc(MAXTABLELEN);
 
     if (chkAndCopyTableTokens(pParse, alias_f->name, name, 0,
-                              ERROR_ON_TBL_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto clean_arg;
 
     assert (*url->z == '\'' || *url->z == '\"');
@@ -2241,6 +2269,7 @@ static int printAliasForTablename(OpFunc *f)
         f->errorMsg = NULL;
     } else 
     {
+        logmsg(LOGMSG_ERROR, "%s alias %s not found\n", __func__, alias ? alias : "NULL");
         f->rc = SQLITE_INTERNAL;
         f->errorMsg = "Alias not found";
     }
@@ -2371,7 +2400,7 @@ void comdb2grant(Parse *pParse, int revoke, int permission, Token *nm,
                 goto clean_arg;
             }
         } else if (chkAndCopyTableTokens(pParse, grant->table, nm, lnm,
-                                         ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL)) {
+                                         ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0)) {
             goto clean_arg;
         }
     }
@@ -2669,6 +2698,7 @@ static int produceAnalyzeCoverage(OpFunc *f)
         f->errorMsg = NULL;
     } else 
     {
+        logmsg(LOGMSG_ERROR, "%s error rc %d\n", __func__, rc);
         f->rc = SQLITE_INTERNAL;
         f->errorMsg = "Could not read value";
     }
@@ -2696,7 +2726,7 @@ void comdb2getAnalyzeCoverage(Parse* pParse, Token *nm, Token *lnm)
     char *tablename = (char*) malloc (MAXTABLELEN);
 
     if (chkAndCopyTableTokens(pParse, tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         free(tablename);
     else
         comdb2prepareOpFunc(v, pParse, 0, tablename, &produceAnalyzeCoverage,
@@ -2724,7 +2754,7 @@ void comdb2CreateRangePartition(Parse *pParse, Token *nm, Token *col,
     char tblname[MAXTABLELEN];
 
     if (chkAndCopyTableTokens(pParse, tblname, nm, NULL,
-                              ERROR_ON_TBL_NOT_FOUND, 0, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 0, 0, NULL, /* check_for_illegal_chars */ 1))
         return;
 
     shard_range_create(pParse, tblname, col, limits);
@@ -2747,6 +2777,7 @@ static int produceAnalyzeThreshold(OpFunc *f)
         f->errorMsg = NULL;
     } else 
     {
+        logmsg(LOGMSG_ERROR, "%s error rc %d\n", __func__, rc);
         f->rc = SQLITE_INTERNAL;
         f->errorMsg = "Could not read value";
     }
@@ -2774,7 +2805,7 @@ void comdb2getAnalyzeThreshold(Parse* pParse, Token *nm, Token *lnm)
     char *tablename = (char*) malloc (MAXTABLELEN);
 
     if (chkAndCopyTableTokens(pParse, tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         free(tablename);
     else
         comdb2prepareOpFunc(v, pParse, 0, tablename, &produceAnalyzeThreshold,
@@ -2879,7 +2910,7 @@ void comdb2timepartRetention(Parse *pParse, Token *nm, Token *lnm, int retention
         goto err;
 
     if (chkAndCopyTableTokens(pParse, tp_retention->timepartname, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto clean_arg;
 
     int rc = timepart_rollout(tp_retention->timepartname);
@@ -2898,6 +2929,7 @@ void comdb2timepartRetention(Parse *pParse, Token *nm, Token *lnm, int retention
 
     return;
 err:
+    logmsg(LOGMSG_ERROR, "%s error!\n", __func__);
     setError(pParse, SQLITE_INTERNAL, "Internal Error");
 clean_arg:
     if (arg)
@@ -3003,7 +3035,7 @@ void sqlite3AlterRenameTable(Parse *pParse, Token *pSrcName, Token *pName)
     }
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, pSrcName, NULL,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 1))
         goto out;
 
     comdb2WriteTransaction(pParse);
@@ -4987,7 +5019,7 @@ void comdb2AlterTableStart(
 
     if ((chkAndCopyTableTokens(pParse, ctx->tablename, pName1, pName2,
                                ERROR_ON_TBL_NOT_FOUND, 1, 0,
-                               &ctx->partition_first_shardname)))
+                               &ctx->partition_first_shardname, /* check_for_illegal_chars */ 0)))
         goto cleanup;
 
     ctx->schema->name = comdb2_strdup(ctx->mem, ctx->tablename);
@@ -5153,7 +5185,7 @@ void comdb2CreateTableStart(
 
     if (chkAndCopyTableTokens(pParse, ctx->tablename, pName1, pName2,
                               (noErr) ? ERROR_IGNORE : ERROR_ON_TBL_FOUND, 1,
-                              &table_exists, NULL))
+                              &table_exists, NULL, /* check_for_illegal_chars */ 1))
         goto cleanup;
 
     ctx->schema->name = comdb2_strdup(ctx->mem, ctx->tablename);
@@ -6196,7 +6228,7 @@ void comdb2CreateIndex(
 
     if ((chkAndCopyTable(pParse, sc->tablename, ctx->schema->name,
                          strlen(ctx->schema->name), ERROR_ON_TBL_NOT_FOUND, 1, 0,
-                         &ctx->partition_first_shardname)))
+                         &ctx->partition_first_shardname, /* check_for_illegal_chars */ 0)))
         goto cleanup;
 
     /*
@@ -6884,7 +6916,7 @@ void comdb2DropIndex(Parse *pParse, Token *pName1, Token *pName2, int ifExists)
         sqlite3Dequote(tbl_name);
 
         if ((chkAndCopyTable(pParse, sc->tablename, tbl_name, strlen(tbl_name),
-                             ERROR_ON_TBL_NOT_FOUND, 1, 0, &ctx->partition_first_shardname)))
+                             ERROR_ON_TBL_NOT_FOUND, 1, 0, &ctx->partition_first_shardname, /* check_for_illegal_chars */ 0)))
             goto cleanup;
 
         if (authenticateSC(sc->tablename, pParse))
@@ -6948,7 +6980,7 @@ void comdb2DropIndex(Parse *pParse, Token *pName1, Token *pName2, int ifExists)
         }
 
         if ((chkAndCopyTable(pParse, sc->tablename, table->tablename,
-                             strlen(table->tablename), ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL)))
+                             strlen(table->tablename), ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0)))
             goto cleanup;
 
         if (authenticateSC(sc->tablename, pParse))
@@ -7513,7 +7545,7 @@ void comdb2SchemachangeControl(Parse *pParse, int action, Token *nm, Token *lnm)
     sc->preempted = action;
 
     if (chkAndCopyTableTokens(pParse, sc->tablename, nm, lnm,
-                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL))
+                              ERROR_ON_TBL_NOT_FOUND, 1, 0, NULL, /* check_for_illegal_chars */ 0))
         goto out;
 
     if (authenticateSC(sc->tablename, pParse))
@@ -7646,6 +7678,11 @@ void comdb2_create_view(Parse *pParse, const char *view_name, int view_name_len,
         goto out;
     } else {
         memcpy(sc->tablename, view_name, view_name_len);
+    }
+
+    if (!str_is_alphanumeric(sc->tablename, NON_ALPHANUM_CHARS_ALLOWED_IN_TABLENAME)) {
+        setError(pParse, SQLITE_MISUSE, "view name has illegal characters");
+        goto out;
     }
 
     sc->newcsc2 = strdup(zStmt); /* Freed by free_schema_change_type() */
@@ -7933,7 +7970,7 @@ void comdb2SaveMergeTable(Parse *pParse, Token *name, Token *database, int alter
     char *partition_first_shardname = NULL;
 
     if (chkAndCopyTableTokens(pParse, partition->u.mergetable.tablename, name, database,
-                              ERROR_ON_TBL_NOT_FOUND, 1, NULL, &partition_first_shardname)) {
+                              ERROR_ON_TBL_NOT_FOUND, 1, NULL, &partition_first_shardname, /* check_for_illegal_chars */ 0)) {
         return;                             
     }
 
@@ -7966,5 +8003,23 @@ void create_default_consumer_sp(Parse *p, char *spname)
     strcpy(sc->tablename, spname);
     strcpy(sc->fname, version);
     comdb2prepareNoRows(v, p, 0, sc, &comdb2SqlSchemaChange, (vdbeFuncArgFree)&free_schema_change_type);
+}
 
+void create_default_consumer_sp_atomic(Parse *p, char *spname, const char * tablename_for_q, const char * newcsc2_for_q, int seq_for_q, char dest_for_q[64])
+{
+    Vdbe *v = sqlite3GetVdbe(p);
+    const char *version = "comdb2 default consumer 1.1";
+
+    struct schema_change_type *sc = new_schemachange_type();
+    sc->kind = SC_DEFAULTCONS;
+    strcpy(sc->tablename, spname);
+    strcpy(sc->fname, version);
+    sc->newcsc2 = strdup(default_consumer);
+    sc->persistent_seq = seq_for_q;
+    struct dest *d = malloc(sizeof(struct dest));
+    d->dest = strdup(dest_for_q);
+    listc_abl(&sc->dests, d);
+    sc->newcsc2_for_default_cons_q = strdup(newcsc2_for_q);
+    strcpy(sc->tablename_for_default_cons_q, tablename_for_q);
+    comdb2PrepareSC(v, p, 0, sc, &comdb2SqlSchemaChange, (vdbeFuncArgFree)&free_schema_change_type);
 }

@@ -4546,73 +4546,25 @@ int osql_send_dbglog(osql_target_t *target, unsigned long long rqid,
  * It handles remote/local connectivity
  *
  */
-int osql_send_updstat(osql_target_t *target, unsigned long long rqid,
-                      uuid_t uuid, unsigned long long seq, char *pData,
-                      int nData, int nStat, int type)
+int osql_send_updstat(osqlstate_t *osql)
 {
-    osql_updstat_rpl_t updstat_rpl = {{0}};
+    osql_target_t *target = &osql->target;
+    if (check_master(target)) return OSQL_SEND_ERROR_WRONGMASTER;
+
+    uint8_t p_buf[OSQLCOMM_UPDSTAT_UUID_RPL_TYPE_LEN];
+    uint8_t *p_buf_end = p_buf + sizeof(p_buf);
+
+
     osql_updstat_uuid_rpl_t updstat_rpl_uuid = {{0}};
+    updstat_rpl_uuid.hd.type = OSQL_UPDSTAT;
+    comdb2uuidcpy(updstat_rpl_uuid.hd.uuid, osql->uuid);
 
-    uint8_t buf[(int)OSQLCOMM_UPDSTAT_RPL_TYPE_LEN >
-                        (int)OSQLCOMM_UPDSTAT_UUID_RPL_TYPE_LEN
-                    ? OSQLCOMM_UPDSTAT_RPL_TYPE_LEN
-                    : OSQLCOMM_UPDSTAT_UUID_RPL_TYPE_LEN];
-    uint8_t *p_buf = buf;
-    uint8_t *p_buf_end = p_buf + sizeof(buf);
-    int sent;
-    int msglen;
-
-    if (check_master(target))
-        return OSQL_SEND_ERROR_WRONGMASTER;
-
-    if (rqid == OSQL_RQID_USE_UUID) {
-        updstat_rpl_uuid.hd.type = OSQL_UPDSTAT;
-        comdb2uuidcpy(updstat_rpl_uuid.hd.uuid, uuid);
-        updstat_rpl_uuid.dt.seq = seq;
-        updstat_rpl_uuid.dt.nData = nData;
-        updstat_rpl_uuid.dt.nStat = nStat;
-
-        if (!(p_buf = osqlcomm_updstat_uuid_rpl_type_put(&updstat_rpl_uuid,
-                                                         p_buf, p_buf_end))) {
-            logmsg(LOGMSG_ERROR, "%s:%s returns NULL\n", __func__,
-                    "osqlcomm_updstat_uuid_rpl_type_put");
-            return -1;
-        }
-        memset(p_buf, 0, sizeof(updstat_rpl_uuid.dt.pData));
-        msglen = sizeof(updstat_rpl_uuid);
-        sent = sizeof(updstat_rpl_uuid.dt.pData);
-        type = osql_net_type_to_net_uuid_type(NET_OSQL_SOCK_RPL);
-    } else {
-        updstat_rpl.hd.type = OSQL_UPDSTAT;
-        updstat_rpl.hd.sid = rqid;
-        updstat_rpl.dt.seq = seq;
-        updstat_rpl.dt.nData = nData;
-        updstat_rpl.dt.nStat = nStat;
-        if (!(p_buf = osqlcomm_updstat_rpl_type_put(&updstat_rpl, p_buf,
-                                                    p_buf_end))) {
-            logmsg(LOGMSG_ERROR, "%s:%s returns NULL\n", __func__,
-                    "osqlcomm_updstat_rpl_type_put");
-            return -1;
-        }
-        memset(p_buf, 0, sizeof(updstat_rpl.dt.pData));
-        msglen = sizeof(updstat_rpl);
-        sent = sizeof(updstat_rpl.dt.pData);
+    if (osqlcomm_updstat_uuid_rpl_type_put(&updstat_rpl_uuid, p_buf, p_buf_end) == NULL) {
+        logmsg(LOGMSG_ERROR, "%s: osqlcomm_updstat_uuid_rpl_type_put failed\n", __func__);
+        return -1;
     }
-
-    if (nData > 0) {
-        p_buf = buf_no_net_put(pData, nData < sent ? nData : sent, p_buf,
-                               p_buf_end);
-    }
-
-    if (gbl_enable_osql_logging) {
-        uuidstr_t us;
-        logmsg(LOGMSG_DEBUG, "[%llu %s] send OSQL_UPDSTATREC %llx (%lld)\n",
-               rqid, comdb2uuidstr(uuid, us), seq, seq);
-    }
-
-    return target->send(target, type, buf, msglen, 0,
-                        (nData > sent) ? pData + sent : NULL,
-                        (nData > sent) ? nData - sent : 0);
+    int type = osql_net_type_to_net_uuid_type(NET_OSQL_SOCK_RPL);
+    return target->send(target, type, p_buf, sizeof(updstat_rpl_uuid), 0, NULL, 0);
 }
 
 /**
@@ -6893,6 +6845,8 @@ int osql_set_usedb(struct ireq *iq, const char *tablename, int tableversion, int
     return 0;
 }
 
+int gbl_comdb2_oplog_preserve_seqno = 1;
+
 /**
  * Handle the finalize part of a chain of schema changes
  *
@@ -6923,6 +6877,15 @@ int osql_finalize_scs(struct ireq *iq, tran_type *trans)
         if (iq->sc->db)
             iq->usedb = iq->sc->db;
         assert(iq->sc->nothrevent);
+
+        if (gbl_comdb2_oplog_preserve_seqno &&
+            IS_FASTINIT(iq->sc) &&
+            gbl_replicate_local &&
+            strcasecmp(iq->usedb->tablename, "comdb2_oplog") == 0) {
+            long long seqno;
+            if (get_next_seqno(trans, iq->sc_tran, &seqno) == 0)
+                bdb_set_seqno(iq->sc_tran, seqno);
+        }
 
         rc = finalize_schema_change(iq, iq->sc_tran);
         iq->usedb = NULL;
@@ -8210,6 +8173,11 @@ int osql_comm_echo(char *tohost, int stream, unsigned long long *sent,
     int j;
     int latency = 0;
 
+    if (!osqlcomm_host_known(tohost)) {
+        fprintf(stderr, "\"%s\" not a host knownt to osql\n", tohost);
+        return 1;
+    }
+
     i = 0;
     for (j = 0; j < stream; j++) {
         /* get an echo message */
@@ -8242,13 +8210,11 @@ int osql_comm_echo(char *tohost, int stream, unsigned long long *sent,
             return -1;
         }
 
-        /*TODO: validate destination node to be valid!*/
-        /* ping */
         rc = offload_net_send(tohost, NET_OSQL_ECHO_PING, (char *)buf,
-                              sizeof(osql_echo_t), 1, NULL, 0);
+                sizeof(osql_echo_t), 1, NULL, 0);
         if (rc) {
             logmsg(LOGMSG_ERROR, "%s: failed to send ping rc=%d\n", __func__, rc);
-            return -1;
+                return -1;
         }
         i++;
     }
@@ -8945,3 +8911,21 @@ int osql_scl_print(uint8_t *p_buf_key, const uint8_t *p_buf_key_end,
     free(scl.ser_scs);
     return 0;
 }
+
+int osqlcomm_host_known(const char *tohost) 
+{
+    osql_comm_t *comm = get_thecomm();
+    if (!comm) {
+        logmsg(LOGMSG_ERROR, "osql_decom_node: no comm object?\n");
+        return 0;
+    }
+    netinfo_type *netinfo_ptr = (netinfo_type *)comm->handle_sibling;
+    const char *nodes[REPMAX];
+    int nnodes = net_get_all_nodes(netinfo_ptr, nodes);
+    for (int i = 0; i < nnodes; i++) {
+        if (strcmp(tohost, nodes[i]) == 0)
+            return 1;
+    }
+    return 0;
+}
+
