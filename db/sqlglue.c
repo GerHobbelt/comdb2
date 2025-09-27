@@ -8896,8 +8896,10 @@ static int chunk_transaction(BtCursor *pCur, struct sqlclntstate *clnt,
              */
         }
 
-        if (gbl_throttle_txn_chunks_msec > 0) {
-            poll(NULL, 0, gbl_throttle_txn_chunks_msec);
+        // clnt takes priority for throttle time
+        int throttle = clnt->dbtran.throttle_txn_chunks_msec > 0 ? clnt->dbtran.throttle_txn_chunks_msec : gbl_throttle_txn_chunks_msec;
+        if (throttle > 0) {
+            poll(NULL, 0, throttle);
         }
 
         /* restart a new transaction */
@@ -11494,8 +11496,8 @@ int gbl_connect_remote_rte = 0;
  */
 int gbl_fdb_socket_timeout_ms;
 
-SBUF2 *connect_remote_db(const char *protocol, const char *dbname, const char *service, char *host, int use_cache,
-                         int force_rte)
+SBUF2 *connect_remote_db_flags(const char *protocol, const char *dbname, const char *service, char *host, int use_cache,
+                         int force_rte, int sbflags)
 {
     SBUF2 *sb;
     int port;
@@ -11551,7 +11553,7 @@ retry:
     (void)setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
 sbuf:
-    sb = sbuf2open(sockfd, 0);
+    sb = sbuf2open(sockfd, sbflags);
     if (!sb) {
         logmsg(LOGMSG_ERROR, "%s: failed to open sbuf\n", __func__);
         Close(sockfd);
@@ -11577,6 +11579,13 @@ sbuf:
 
     return sb;
 }
+
+SBUF2 *connect_remote_db(const char *protocol, const char *dbname, const char *service, char *host, int use_cache,
+                         int force_rte)
+{
+    return connect_remote_db_flags(protocol, dbname, service, host, use_cache, force_rte, 0);
+}
+
 
 int sqlite3PagerLockingMode(Pager *p, int mode) { return 0; }
 

@@ -8,6 +8,7 @@
 #include <string.h>
 #include <schemachange.h>
 #include <sc_lua.h>
+#include <sc_util.h>
 #include <comdb2.h>
 #include <bdb_api.h>
 #include <osqlsqlthr.h>
@@ -30,7 +31,6 @@
 #include "db_access.h" /* gbl_check_access_controls */
 #include "comdb2_atomic.h"
 #include "alias.h"
-#include "importdata.pb-c.h"
 
 #define COMDB2_INVALID_AUTOINCREMENT "invalid datatype for autoincrement"
 
@@ -140,15 +140,12 @@ static inline int chkAndCopyTable(Parse *pParse, char *dst, const char *name,
     /* Remove quotes (if any). */
     sqlite3Dequote(table_name);
 
-    /* Check whether table name length is valid. */
-    if (strlen(table_name) >= MAXTABLELEN) {
-        rc = setError(pParse, SQLITE_MISUSE, "Table name is too long");
-        goto cleanup;
-    }
-
-    if (check_for_illegal_chars && !str_is_alphanumeric(table_name, NON_ALPHANUM_CHARS_ALLOWED_IN_TABLENAME)) {
-        rc = setError(pParse, SQLITE_MISUSE, "table name has illegal characters");
-        goto cleanup;
+    /* Check whether table name is valid. */
+    const char *error = NULL;
+    if (validate_table_name(table_name, strlen(table_name),
+                            check_for_illegal_chars, &error) != 0) {
+      rc = setError(pParse, SQLITE_MISUSE, error);
+      goto cleanup;
     }
 
     if (gbl_allow_user_schema && clnt->current_user.have_name &&
@@ -756,7 +753,7 @@ int comdb2SendBpfunc(OpFunc *f)
 
 /**************************** Function prototypes ***************************/
 
-static void comdb2Rebuild(Parse *p, Token* nm, Token* lnm, int opt);
+static void comdb2Rebuild(Parse *p, Token* nm, Token* lnm, int opt, int oplog_cnt);
 
 /************************** Function definitions ****************************/
 
@@ -1000,7 +997,8 @@ out:
     free(partition_first_shard);
 }
 
-static inline void comdb2Rebuild(Parse *pParse, Token* nm, Token* lnm, int opt)
+static inline void comdb2Rebuild(Parse *pParse, Token* nm, Token* lnm, int opt,
+        int oplog_count)
 {
     Vdbe *v  = sqlite3GetVdbe(pParse);
     char *partition_first_shard = NULL;
@@ -1011,7 +1009,16 @@ static inline void comdb2Rebuild(Parse *pParse, Token* nm, Token* lnm, int opt)
         return;
     }
 
-    if (chkAndCopyTableTokens(pParse, sc->tablename, nm, lnm,
+    /* TRUNCOPLOG rebuild */
+    if (nm == NULL && lnm == NULL) {
+        if (oplog_count < 0) {
+            setError(pParse, SQLITE_MISUSE, "oplog count is required");
+            goto out;
+        }
+        snprintf(sc->tablename, MAXTABLELEN, "comdb2_oplog");
+        sc->preserve_oplog_count = oplog_count;
+
+    } else if (chkAndCopyTableTokens(pParse, sc->tablename, nm, lnm,
                               ERROR_ON_TBL_NOT_FOUND, 1, 0, &partition_first_shard, /* check_for_illegal_chars */ 0))
         goto out;
 
@@ -1083,7 +1090,7 @@ out:
 }
 
 
-void comdb2RebuildFull(Parse* p, Token* nm,Token* lnm, int opt)
+void comdb2RebuildFull(Parse* p, Token* nm,Token* lnm, int opt, int oplog_count)
 {
     if (comdb2IsPrepareOnly(p))
         return;
@@ -1097,7 +1104,7 @@ void comdb2RebuildFull(Parse* p, Token* nm,Token* lnm, int opt)
     }
 #endif
 
-    comdb2Rebuild(p, nm,lnm, REBUILD_ALL + REBUILD_DATA + REBUILD_BLOB + opt);
+    comdb2Rebuild(p, nm,lnm, REBUILD_ALL + REBUILD_DATA + REBUILD_BLOB + opt, oplog_count);
 }
 
 
@@ -1115,7 +1122,7 @@ void comdb2RebuildData(Parse* p, Token* nm, Token* lnm, int opt)
     }
 #endif
 
-    comdb2Rebuild(p,nm,lnm,REBUILD_DATA + opt);
+    comdb2Rebuild(p,nm,lnm,REBUILD_DATA + opt, -1);
 }
 
 void comdb2RebuildDataBlob(Parse* p,Token* nm, Token* lnm, int opt)
@@ -1132,7 +1139,7 @@ void comdb2RebuildDataBlob(Parse* p,Token* nm, Token* lnm, int opt)
     }
 #endif
 
-    comdb2Rebuild(p, nm, lnm, REBUILD_BLOB + opt);
+    comdb2Rebuild(p, nm, lnm, REBUILD_BLOB + opt, -1);
 }
 
 void comdb2Truncate(Parse* pParse, Token* nm, Token* lnm)
