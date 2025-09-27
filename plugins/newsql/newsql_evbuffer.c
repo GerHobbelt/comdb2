@@ -596,9 +596,8 @@ static void process_query(struct newsql_appdata_evbuffer *appdata)
     struct sqlclntstate *clnt = &appdata->clnt;
     CDB2SQLQUERY *sqlquery = appdata->sqlquery = appdata->query->sqlquery;
 
-    process_features(appdata);
-
     if (!sqlquery) goto err;
+    process_features(appdata);
     int have_ssl = clnt->features.have_ssl;
     int have_sqlite_fmt = clnt->features.have_sqlite_fmt;
     clnt->sqlite_row_format = have_sqlite_fmt;
@@ -655,10 +654,21 @@ static void process_disttxn(struct newsql_appdata_evbuffer *appdata, CDB2DISTTXN
         goto sendresponse;
     }
 
+    if (!disttxn->disttxn) {
+        logmsg(LOGMSG_ERROR, "%s: disttxn is NULL\n", __func__);
+        rcode = -1;
+        goto sendresponse;
+    }
+
     switch (disttxn->disttxn->operation) {
 
     /* Coordinator master tells me (participant master) to prepare */
     case (CDB2_DIST__PREPARE):
+        if (!disttxn->disttxn->name || !disttxn->disttxn->tier || !disttxn->disttxn->master) {
+            logmsg(LOGMSG_ERROR, "%s: disttxn prepare missing name, tier or master\n", __func__);
+            rcode = -1;
+            goto sendresponse;
+        }
         rcode = osql_prepare(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier,
                              disttxn->disttxn->master);
         break;
@@ -670,17 +680,33 @@ static void process_disttxn(struct newsql_appdata_evbuffer *appdata, CDB2DISTTXN
 
     /* Participant master sends me (coordinator master) a heartbeat message */
     case (CDB2_DIST__HEARTBEAT):
+        if (!disttxn->disttxn->name || !disttxn->disttxn->tier) {
+            logmsg(LOGMSG_ERROR, "%s: disttxn malformed heartbeat\n", __func__);
+            rcode = -1;
+            goto sendresponse;
+        }
         rcode = participant_heartbeat(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier);
         break;
 
     /* Participant master tells me (coordinator master) it has prepared */
     case (CDB2_DIST__PREPARED):
+        if (!disttxn->disttxn->name || !disttxn->disttxn->tier || !disttxn->disttxn->master) {
+            logmsg(LOGMSG_ERROR, "%s: disttxn prepared missing name, tier or master\n", __func__);
+            rcode = -1;
+            goto sendresponse;
+        }
         rcode = participant_prepared(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier,
                                      disttxn->disttxn->master);
         break;
 
     /* Participant master tells me (coordinator master) it has failed */
     case (CDB2_DIST__FAILED_PREPARE):
+        if (!disttxn->disttxn->name || !disttxn->disttxn->tier || !disttxn->disttxn->has_rcode ||
+            !disttxn->disttxn->has_outrc || !disttxn->disttxn->errmsg) {
+            logmsg(LOGMSG_ERROR, "%s: disttxn failed prepare missing name, tier, rcode or errmsg\n", __func__);
+            rcode = -1;
+            goto sendresponse;
+        }
         rcode = participant_failed(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier,
                                    disttxn->disttxn->rcode, disttxn->disttxn->outrc, disttxn->disttxn->errmsg);
         break;
@@ -697,6 +723,11 @@ static void process_disttxn(struct newsql_appdata_evbuffer *appdata, CDB2DISTTXN
 
     /* Participant master tells me (coordinator master) it has propagated */
     case (CDB2_DIST__PROPAGATED):
+        if (!disttxn->disttxn->name || !disttxn->disttxn->tier) {
+            logmsg(LOGMSG_ERROR, "%s: disttxn propagated missing name or tier\n", __func__);
+            rcode = -1;
+            goto sendresponse;
+        }
         rcode = participant_propagated(disttxn->disttxn->txnid, disttxn->disttxn->name, disttxn->disttxn->tier);
         break;
     }
@@ -853,7 +884,12 @@ cleanup:
 
 static void process_newsql_payload(struct newsql_appdata_evbuffer *appdata, CDB2QUERY *query)
 {
-    rem_lru_evbuffer(&appdata->clnt); /* going to work; not eligible for shutdown */
+    struct sqlclntstate *clnt = &appdata->clnt;
+    rem_lru_evbuffer(clnt); /* going to work; not eligible for shutdown */
+    if (clnt->evicted_appsock) { /* check after removing ourselves from lru */
+        newsql_cleanup(appdata);
+        return;
+    }
     switch (appdata->hdr.type) {
     case CDB2_REQUEST_TYPE__CDB2QUERY:
         process_cdb2query(appdata, query);
@@ -1220,12 +1256,7 @@ static void newsql_setup_clnt_evbuffer(int fd, short what, void *data)
     disable_ssl_evbuffer(appdata);
     add_sql_evbuffer(clnt);
     init_lru_evbuffer(clnt);
-    if (add_appsock_connection_evbuffer(clnt) != 0) {
-        exhausted_appsock_connections(clnt);
-        free_newsql_appdata_evbuffer(-1, 0, appdata);
-    } else {
-        rd_hdr(-1, 0, appdata);
-    }
+    rd_hdr(-1, 0, appdata);
 }
 
 static pthread_t gethostname_thd;

@@ -41,6 +41,7 @@
 /* Separator for composite tunable components. */
 #define COMPOSITE_TUNABLE_SEP '.'
 
+extern int gbl_bulk_import_validation_werror;
 extern int gbl_debug_sleep_during_bulk_import;
 extern int gbl_waitalive_iterations;
 extern int gbl_allow_anon_id_for_spmux;
@@ -193,6 +194,7 @@ extern int gbl_debug_sleep_before_prepare;
 extern int gbl_wait_for_prepare_seqnum;
 extern int gbl_flush_replicant_on_prepare;
 extern int gbl_slow_rep_log_get_loop;
+extern int gbl_abort_during_downgrade_if_scs_dont_stop;
 extern int gbl_abort_on_unset_ha_flag;
 extern int gbl_abort_on_unfound_txn;
 extern int gbl_abort_on_ufid_mismatch;
@@ -210,6 +212,8 @@ extern int gbl_verbose_send_coherency_lease;
 extern int gbl_reset_on_unelectable_cluster;
 extern int gbl_rep_verify_always_grab_writelock;
 extern int gbl_rep_verify_will_recover_trace;
+extern int64_t gbl_warn_wr_logbytes_per_txn;
+extern int64_t gbl_max_wr_logbytes_per_txn;
 extern uint32_t gbl_written_rows_warn;
 extern uint32_t gbl_max_wr_rows_per_txn;
 extern uint32_t gbl_max_cascaded_rows_per_txn;
@@ -298,6 +302,7 @@ extern int gbl_logdelete_lock_trace;
 extern int gbl_flush_log_at_checkpoint;
 extern int gbl_online_recovery;
 extern int gbl_forbid_remote_admin;
+extern int gbl_forbid_remote_repopnewlrl;
 extern int gbl_abort_on_dta_lookup_error;
 extern int gbl_debug_children_lock;
 extern int gbl_serialize_reads_like_writes;
@@ -573,11 +578,13 @@ extern int gbl_altersc_sampling_sec;
 extern int gbl_altersc_latency_inc;
 extern int gbl_sc_history_max_rows;
 extern int gbl_sc_status_max_rows;
+extern int gbl_rep_process_warn_time;
 extern int gbl_rep_process_pstack_time;
 extern int gbl_sql_recover_time;
 extern int gbl_legacy_requests_verbose;
 extern int gbl_long_request_ms;
 extern int gbl_comdb2_oplog_preserve_seqno;
+extern int gbl_nonodh_queue_scan_limit;
 
 extern void set_snapshot_impl(snap_impl_enum impl);
 extern const char *snap_impl_str(snap_impl_enum impl);

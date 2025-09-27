@@ -24,6 +24,8 @@
 #include <zlib.h>
 #include <shard_range.h>
 #include <logical_cron.h>
+#include <str_util.h>
+#include <import_util.h>
 #include "cdb2_constants.h"
 #include "db_access.h" /* gbl_check_access_controls */
 #include "comdb2_atomic.h"
@@ -117,19 +119,6 @@ enum table_chk_flags {
     ERROR_ON_TBL_NOT_FOUND = 1,
     ERROR_IGNORE = 2,
 };
-
-// Checks that a string is alphanumeric. Allowed non-alphanumeric characters can be passed in `exceptions`.
-// Pass emptystring to `exceptions` to pass no exceptions.
-int str_is_alphanumeric(const char * const name, const char * const exceptions)
-{
-    char c;
-    for (int i=0; (c = name[i]), c != '\0'; ++i) {
-        if (!isalnum(c) && !strchr(exceptions, c)) {
-            return 0;
-        }
-    }
-    return 1;
-}
 
 static int authenticateSC(const char *table, Parse *pParse);
 /* chkAndCopyTable expects the dst (OUT) buffer to be of MAXTABLELEN size. */
@@ -1776,6 +1765,16 @@ void comdb2Replace(Parse* pParse, Token *nm, Token *nm2, Token *nm3)
 
     if (create_string_from_token(v, pParse, &src_tablename, nm3)) {
         goto err;
+    }
+
+    const enum bulk_import_validation_rc validation_rc =
+        validate_bulk_import_inputs(dst_tablename, NULL, srcdb, src_tablename);
+    if (validation_rc == BULK_IMPORT_VALIDATION_FATAL) {
+        setError(pParse, SQLITE_MISUSE,
+            "bulk import inputs have invalid characters");
+        goto err;
+    } else if (validation_rc == BULK_IMPORT_VALIDATION_WARN) {
+        logmsg(LOGMSG_WARN, "%s: bulk import inputs have invalid characters. Proceeding with import anyways.\n", __func__);
     }
 
     struct schema_change_type * const sc = new_schemachange_type();
@@ -7905,9 +7904,18 @@ int comdb2VerifyGenShardKeyExists(Parse *pParse, IdList *cols) {
  * Create a test generic sharding partition for server testing purposes
  *
  */
+extern int gbl_fdb_push_remote_write;
 void comdb2CreateGenShard(Parse* pParse, IdList *cols, IdList *dbs)
 {
     struct comdb2_partition *partition;
+
+    /* requires fdb_push_remote_write */
+
+    if (!gbl_fdb_push_remote_write) {
+        setError(pParse, SQLITE_ABORT, "Generic sharding requires fdb remote push write");
+        return;
+    }
+
     partition = _get_partition(pParse, 0);
     if (!partition)
         return;

@@ -1768,7 +1768,6 @@ int handle_sql_begin(struct sqlthdstate *thd, struct sqlclntstate *clnt,
     if (sideeffects == TRANS_CLNTCOMM_NORMAL) {
         write_response(clnt, RESPONSE_ROW_LAST_DUMMY, NULL, 0);
     }
-
 done:
     Pthread_mutex_unlock(&clnt->wait_mutex);
 
@@ -2661,8 +2660,7 @@ static void compare_estimate_cost(sqlite3_stmt *stmt)
         logmsg(LOGMSG_USER, "---------------------------\n");
 }
 
-static int reload_analyze(struct sqlthdstate *thd, struct sqlclntstate *clnt,
-                          int analyze_gen)
+static int reload_analyze(struct sqlthdstate *thd, struct sqlclntstate *clnt, int analyze_gen)
 {
     // if analyze is running, don't reload
     extern volatile int analyze_running_flag;
@@ -2727,7 +2725,9 @@ static int check_thd_gen(struct sqlthdstate *thd, struct sqlclntstate *clnt, int
         int ret;
         TRK;
         stmt_cache_reset(thd->stmt_cache);
+        clnt->loading_stat = 1;
         ret = reload_analyze(thd, clnt, cached_analyze_gen);
+        clnt->loading_stat = 0;
         return ret;
     }
 
@@ -5457,6 +5457,15 @@ void reset_clnt(struct sqlclntstate *clnt, int initial)
         clnt->modsnap_registration = NULL;
     }
     bzero(&clnt->remsql_set, sizeof(clnt->remsql_set));
+    if (clnt->n_set_commands) {
+        int i;
+        for (i = 0; i < clnt->n_set_commands; i++) {
+            free(clnt->set_commands[i]);
+        }
+        free(clnt->set_commands);
+        clnt->n_set_commands = 0;
+        clnt->set_commands = NULL;
+    }
 }
 
 void reset_clnt_flags(struct sqlclntstate *clnt)
@@ -6804,7 +6813,9 @@ static int close_lru_evbuffer_int(struct sqlclntstate *self)
         return -1;
     }
     rem_lru_evbuffer_int(clnt);
-    clnt->plugin.close(clnt); /* newsql_close_evbuffer */
+    int fd = get_fileno(clnt);
+    if (fd != -1) shutdown(fd, SHUT_RDWR);
+    if (self == NULL) clnt->evicted_appsock = 1;
     return 0;
 }
 
@@ -6816,42 +6827,36 @@ static int close_lru_evbuffer(struct sqlclntstate *self)
     return ret;
 }
 
-int add_appsock_connection_evbuffer(struct sqlclntstate *clnt)
+int check_appsock_limit(int pending)
 {
-    extern unsigned long long total_appsock_conns;
-    if (clnt->admin) {
-       return 0;
-    }
+    ++total_appsock_conns;
     int max = bdb_attr_get(thedb->bdb_attr, BDB_ATTR_MAXAPPSOCKSLIMIT);
     int warn = bdb_attr_get(thedb->bdb_attr, BDB_ATTR_APPSOCKSLIMIT);
-    int lim = warn < max ? warn : max;
-    total_appsock_conns++;
-    int current = ATOMIC_ADD32(active_appsock_conns, 1);
-    time_metric_add(thedb->connections, current);
-    if (current > lim) {
-        static time_t last_trace = 0;
+    int current = pending + ATOMIC_ADD32(active_appsock_conns, 1);
+    if (warn > max) warn = max;
+    if (current <= warn) return 0;
+    if (current > max) {
+        if (close_lru_evbuffer(NULL) == 0) return 0;
+        ATOMIC_ADD32(active_appsock_conns, -1);
+        ++gbl_denied_appsock_connection_count;
+        static time_t last = 0;
         time_t now = time(NULL);
-        if (current > max) {
-            if (close_lru_evbuffer(clnt) != 0) {
-                return -1;
-            }
-        } else if (now - last_trace) {
-            last_trace = now;
-            logmsg(LOGMSG_WARN, "%s: SQL connection limit approaching (%d/%d)\n", __func__, current, max);
+        if (now != last) {
+            logmsg(LOGMSG_USER,
+                   "Exhausted appsock connections, total %d connections denied-connection count=%" PRId64 "\n",
+                   current, gbl_denied_appsock_connection_count);
+            last = now;
+        }
+        return -1;
+    } else if (current > warn) {
+        static time_t last = 0;
+        time_t now = time(NULL);
+        if (now != last) {
+            logmsg(LOGMSG_USER, "SQL connection limit approaching (%d/%d)\n", current, max);
+            last = now;
         }
     }
     return 0;
-}
-
-int check_appsock_limit(int pending)
-{
-    int max = bdb_attr_get(thedb->bdb_attr, BDB_ATTR_MAXAPPSOCKSLIMIT);
-    int current = pending + ATOMIC_LOAD32(active_appsock_conns);
-    if (current <= max) return 0;
-    if (close_lru_evbuffer(NULL) == 0) {
-        return 0;
-    }
-    return current;
 }
 
 void rem_appsock_connection_evbuffer(struct sqlclntstate *clnt)
@@ -7176,20 +7181,6 @@ void clnt_plugin_reset(struct sqlclntstate *clnt)
     clnt->plugin.param_count = backup->param_count;
     clnt->plugin.param_value = backup->param_value;
     clnt->plugin.param_index = backup->param_index;
-}
-
-void exhausted_appsock_connections(struct sqlclntstate *clnt)
-{
-    write_response(clnt, RESPONSE_ERROR_APPSOCK_LIMIT, "Exhausted appsock connections.", 0);
-    gbl_denied_appsock_connection_count++;
-    static time_t last = 0;
-    time_t now = time(NULL);
-    if (now != last) {
-        logmsg(LOGMSG_USER,
-               "%s: Exhausted appsock connections, total %d connections denied-connection count=%" PRId64 "\n",
-               __func__, active_appsock_conns, gbl_denied_appsock_connection_count);
-        last = now;
-    }
 }
 
 int maxquerytime_cb(struct sqlclntstate *clnt)

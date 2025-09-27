@@ -24,6 +24,10 @@
   at multiple places.
 */
 
+REGISTER_TUNABLE("abort_during_downgrade_if_scs_dont_stop", "Abort if scs don't stop within 60 seconds"
+                 "after starting a downgrade (default OFF)", TUNABLE_BOOLEAN,
+                 &gbl_abort_during_downgrade_if_scs_dont_stop, 0, NULL, NULL,
+                 NULL, NULL);
 REGISTER_TUNABLE("abort_on_in_use_rqid", NULL, TUNABLE_BOOLEAN,
                  &gbl_abort_on_clear_inuse_rqid, READONLY | NOARG, NULL, NULL,
                  NULL, NULL);
@@ -104,6 +108,11 @@ REGISTER_TUNABLE("broken_num_parser", NULL, TUNABLE_BOOLEAN,
                  NULL, NULL, NULL);
 REGISTER_TUNABLE("buffers_per_context", NULL, TUNABLE_INTEGER,
                  &gbl_buffers_per_context, READONLY | NOZERO, NULL, NULL, NULL,
+                 NULL);
+REGISTER_TUNABLE("bulk_import_validation_werror",
+                 "Treat bulk import input validation warnings as errors. "
+                 "(Default: off)", TUNABLE_BOOLEAN,
+                 &gbl_bulk_import_validation_werror, 0, NULL, NULL, NULL,
                  NULL);
 /*
 REGISTER_TUNABLE("cache",
@@ -575,7 +584,7 @@ REGISTER_TUNABLE("foreign_db_resolve_local", NULL, TUNABLE_BOOLEAN, &gbl_fdb_res
                  READONLY | NOARG | READEARLY, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("foreign_db_push_remote", "Fdb proxy more for reads (OFF turns off writes as well). (Default: on)", TUNABLE_BOOLEAN, &gbl_fdb_push_remote, NOARG, NULL, NULL, 
                  fdb_push_update, NULL);
-REGISTER_TUNABLE("foreign_db_push_remote_writes", "Fdb proxy mode for writes (ON turns on reads as well). (Default: on)", TUNABLE_BOOLEAN, &gbl_fdb_push_remote_write, NOARG, NULL, NULL,
+REGISTER_TUNABLE("foreign_db_push_remote_writes", "Fdb proxy mode for writes (ON turns on reads as well). (Default: off)", TUNABLE_BOOLEAN, &gbl_fdb_push_remote_write, NOARG, NULL, NULL,
                  fdb_push_write_update, NULL);
 REGISTER_TUNABLE("foreign_db_push_redirect",
                  "Redirect fdb query to run via client instead of on server. (Default: off)", TUNABLE_BOOLEAN,
@@ -1443,6 +1452,12 @@ REGISTER_TUNABLE("written_rows_warn",
                  "Set warning threshold for rows written in a transaction.  "
                  "(Default: 0)",
                  TUNABLE_INTEGER, &gbl_written_rows_warn, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("max_wr_logbytes_per_txn", "Set the maximum number of log-bytes written per transaction.",
+                 TUNABLE_INT64, &gbl_max_wr_logbytes_per_txn, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("warn_wr_logbytes_per_txn",
+                 "Set warning threshold for log-bytes written in a transaction.  "
+                 "(Default: 0)",
+                 TUNABLE_INT64, &gbl_warn_wr_logbytes_per_txn, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("max_cascaded_rows_per_txn", "Set the max cascaded rows updated per transaction.", TUNABLE_INTEGER,
                  &gbl_max_cascaded_rows_per_txn, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("max_time_per_txn_ms", "Set the max time allowed for transaction to finish", TUNABLE_INTEGER,
@@ -2001,6 +2016,11 @@ REGISTER_TUNABLE("forbid_remote_admin",
                  TUNABLE_BOOLEAN, &gbl_forbid_remote_admin, 0, NULL, NULL, NULL,
                  NULL);
 
+REGISTER_TUNABLE("forbid_remote_repopnewlrl",
+                 "Forbid repopnewlrl requests from remote machines.  (Default: on)",
+                 TUNABLE_BOOLEAN, &gbl_forbid_remote_repopnewlrl, 0, NULL, NULL, NULL,
+                 NULL);
+
 REGISTER_TUNABLE("abort_on_dta_lookup_error",
                  "Abort on dta lookup lost the race.  (Default: off)",
                  TUNABLE_BOOLEAN, &gbl_abort_on_dta_lookup_error,
@@ -2520,8 +2540,10 @@ REGISTER_TUNABLE("sc_history_max_rows", "Max number of rows returned in comdb2_s
                  TUNABLE_INTEGER, &gbl_sc_history_max_rows, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sc_status_max_rows", "Max number of rows returned in comdb2_sc_status (Default: 1000)",
                  TUNABLE_INTEGER, &gbl_sc_status_max_rows, 0, NULL, NULL, NULL, NULL);
-REGISTER_TUNABLE("rep_process_pstack_time", "pstack the server if rep_process runs longer than time specified in secs (Default: 30s)",
+REGISTER_TUNABLE("rep_process_pstack_time", "pstack the server if rep_process runs longer than time specified in secs. To disable set to 0 (Default: 0)",
                  TUNABLE_INTEGER, &gbl_rep_process_pstack_time, 0, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("rep_process_warn_time", "Print trace if rep_process runs longer than time specified in secs (Default: 10s)",
+                 TUNABLE_INTEGER, &gbl_rep_process_warn_time, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("sql_recover_time", "Number of msec before checking if SQL has waiters. 0 will disable. (Default: 10ms)", TUNABLE_INTEGER, &gbl_sql_recover_time, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("genshard_verbose",
                  "Enable verbose logging for generic sharding logic",
@@ -2535,4 +2557,5 @@ REGISTER_TUNABLE("iam_dbname",
 REGISTER_TUNABLE("inproc_conn_ttl", "Close in-process cached connections after this many seconds of inactivity (Default: 10s)",
                  TUNABLE_INTEGER, &gbl_inproc_conn_ttl, 0, NULL, NULL, NULL, NULL);
 REGISTER_TUNABLE("comdb2_oplog_preserve_seqno", "Preserve max value of the seqno in llmeta", TUNABLE_BOOLEAN, &gbl_comdb2_oplog_preserve_seqno, INTERNAL, NULL, NULL, NULL, NULL);
+REGISTER_TUNABLE("queue_nonodh_scan_limit", "For comdb2_queues, stop queue scan at this depth (Default: 10000)", TUNABLE_INTEGER, &gbl_nonodh_queue_scan_limit, 0, NULL, NULL, NULL, NULL);
 #endif /* _DB_TUNABLES_H */

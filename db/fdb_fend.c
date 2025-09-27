@@ -74,7 +74,7 @@ int gbl_fdb_track = 0;
 int gbl_fdb_track_times = 0;
 int gbl_test_io_errors = 0;
 int gbl_fdb_push_remote = 1;
-int gbl_fdb_push_remote_write = 1;
+int gbl_fdb_push_remote_write = 0;
 int gbl_fdb_push_redirect_foreign = 0;
 int gbl_fdb_incoherence_percentage = 0;
 int gbl_fdb_io_error_retries = 16;
@@ -4293,6 +4293,15 @@ void fdb_free_tran(sqlclntstate *clnt, fdb_tran_t *tran)
 
 extern char gbl_dbname[];
 
+void fdb_client_set_identityBlob(sqlclntstate *clnt, cdb2_hndl_tp *hndl)
+{
+    extern void *(*externalComdb2getAuthIdBlob)(void *ID);
+    if (gbl_fdb_auth_enabled && externalComdb2getAuthIdBlob &&
+        ((clnt->authdata = get_authdata(clnt)) != NULL)) {
+        cdb2_setIdentityBlob(hndl, externalComdb2getAuthIdBlob(clnt->authdata));
+    }
+}
+
 int fdb_trans_commit(sqlclntstate *clnt, enum trans_clntcomm sideeffects)
 {
     fdb_distributed_tran_t *dtran = clnt->dbtran.dtran;
@@ -4340,6 +4349,7 @@ int fdb_trans_commit(sqlclntstate *clnt, enum trans_clntcomm sideeffects)
             if (tran->nwrites) {
                 /* handle is only created upon first remote write to this fdb */
                 assert(tran->fcon.hndl);
+                fdb_client_set_identityBlob(clnt, tran->fcon.hndl);
                 rc = cdb2_run_statement(tran->fcon.hndl, "commit");
             } else {
                 rc = 0;
@@ -4461,6 +4471,7 @@ int fdb_trans_rollback(sqlclntstate *clnt)
             if (tran->nwrites) {
                 /* handle is only created upon first remote write to this fdb */
                 assert(tran->fcon.hndl);
+                fdb_client_set_identityBlob(clnt, tran->fcon.hndl);
                 rc = cdb2_run_statement(tran->fcon.hndl, "rollback");
             } else {
                 rc = 0;
@@ -5748,12 +5759,7 @@ static int _fdb_client_set_options(sqlclntstate *clnt,
     if (clnt->prepare_only) {
         SET_STR("PREPARE_ONLY", "ON");
     }
-
-    extern void *(*externalComdb2getAuthIdBlob)(void *ID);
-    if (gbl_fdb_auth_enabled && externalComdb2getAuthIdBlob &&
-        ((clnt->authdata = get_authdata(clnt)) != NULL)) {
-        cdb2_setIdentityBlob(hndl, externalComdb2getAuthIdBlob(clnt->authdata));
-    }
+    fdb_client_set_identityBlob(clnt, hndl);
 
     return 0;
 }
@@ -5878,7 +5884,7 @@ done:
 static int fdb_cursor_move_sql_cdb2api(BtCursor *pCur, int how)
 {
     fdb_cursor_t *fdbc = pCur->fdbc->impl;
-    cdb2_hndl_tp *hndl = fdbc->fcon.api.hndl;
+    cdb2_hndl_tp *hndl;
     char *sql; /* freed by _fdb_run_sql */
     int rc = 0;
 
@@ -5888,6 +5894,8 @@ static int fdb_cursor_move_sql_cdb2api(BtCursor *pCur, int how)
         logmsg(LOGMSG_ERROR, "%s: no fdbc cursor?\n", __func__);
         return FDB_ERR_BUG;
     }
+
+    hndl = fdbc->fcon.api.hndl;
 
     /* if absolute move, send new query */
     if (how == CFIRST || how == CLAST) {
@@ -5902,6 +5910,10 @@ version_retry:
             rc = fdb_cursor_reopen(pCur);
             if (rc)
                 return rc;
+
+            /* new cursor */
+            fdbc = pCur->fdbc->impl;
+            hndl = fdbc->fcon.api.hndl;
 
             /* do we need to pre-cdb2api version */
             if (pCur->bt->fdb->server_version <= FDB_VER_AUTH) {
@@ -5935,7 +5947,7 @@ static int fdb_cursor_find_sql_cdb2api(BtCursor *pCur, Mem *key, int nfields,
        find/find_last + a followup move)
      */
     fdb_cursor_t *fdbc = pCur->fdbc->impl;
-    cdb2_hndl_tp *hndl = fdbc->fcon.api.hndl;
+    cdb2_hndl_tp *hndl;
     char *sql; /* freed by _fdb_run_sql */
     int rc = 0;
 
@@ -5943,6 +5955,8 @@ static int fdb_cursor_find_sql_cdb2api(BtCursor *pCur, Mem *key, int nfields,
         logmsg(LOGMSG_ERROR, "%s: no fdbc cursor?\n", __func__);
         return FDB_ERR_BUG;
     }
+
+    hndl = fdbc->fcon.api.hndl;
 
 version_retry:
     rc = _fdb_build_find_str(pCur, key, nfields, bias, &sql, NULL);
@@ -5955,6 +5969,10 @@ version_retry:
         rc = fdb_cursor_reopen(pCur);
         if (rc)
             return rc;
+
+        /* new cursor */
+        fdbc = pCur->fdbc->impl;
+        hndl = fdbc->fcon.api.hndl;
 
         /* do we need to pre-cdb2api version */
         if (pCur->bt->fdb->server_version <= FDB_VER_AUTH) {
